@@ -65,6 +65,24 @@ async def _init_tables(db: aiosqlite.Connection) -> None:
             id INTEGER PRIMARY KEY CHECK (id = 1),
             current_key_idx INTEGER DEFAULT 0
         );
+
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tg_user_id INTEGER NOT NULL,
+            tg_username TEXT,
+            action TEXT NOT NULL,
+            detail TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS usage_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            api_key_id INTEGER NOT NULL,
+            tg_user_id INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            session_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
     """)
     await db.execute(
         "INSERT OR IGNORE INTO key_rotation (id, current_key_idx) VALUES (1, 0)"
@@ -307,3 +325,79 @@ async def stop_polling_session(session_row_id: int) -> None:
         "UPDATE sessions SET polling_active = 0 WHERE id = ?", (session_row_id,)
     )
     await db.commit()
+
+
+# --- Activity Log ---
+
+async def log_activity(
+    tg_user_id: int,
+    action: str,
+    detail: str | None = None,
+    tg_username: str | None = None,
+) -> None:
+    db = await get_db()
+    await db.execute(
+        "INSERT INTO activity_log (tg_user_id, tg_username, action, detail) VALUES (?, ?, ?, ?)",
+        (tg_user_id, tg_username, action, detail),
+    )
+    await db.commit()
+
+
+async def get_activity_log(limit: int = 30) -> list[dict]:
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT tg_user_id, tg_username, action, detail, created_at "
+        "FROM activity_log ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    )
+    return [dict(r) for r in rows]
+
+
+# --- Usage Stats ---
+
+async def record_usage(
+    api_key_id: int,
+    tg_user_id: int,
+    action: str,
+    session_id: str | None = None,
+) -> None:
+    db = await get_db()
+    await db.execute(
+        "INSERT INTO usage_stats (api_key_id, tg_user_id, action, session_id) VALUES (?, ?, ?, ?)",
+        (api_key_id, tg_user_id, action, session_id),
+    )
+    await db.commit()
+
+
+async def get_usage_by_key() -> list[dict]:
+    """Get usage counts grouped by API key."""
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        """SELECT u.api_key_id, k.label, k.key,
+                  COUNT(*) as total_actions,
+                  SUM(CASE WHEN u.action = 'create_session' THEN 1 ELSE 0 END) as sessions_created,
+                  SUM(CASE WHEN u.action = 'send_message' THEN 1 ELSE 0 END) as messages_sent,
+                  MIN(u.created_at) as first_used,
+                  MAX(u.created_at) as last_used
+           FROM usage_stats u
+           LEFT JOIN api_keys k ON u.api_key_id = k.id
+           GROUP BY u.api_key_id
+           ORDER BY total_actions DESC"""
+    )
+    return [dict(r) for r in rows]
+
+
+async def get_usage_by_user() -> list[dict]:
+    """Get usage counts grouped by user."""
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        """SELECT u.tg_user_id, w.username,
+                  COUNT(*) as total_actions,
+                  SUM(CASE WHEN u.action = 'create_session' THEN 1 ELSE 0 END) as sessions_created,
+                  SUM(CASE WHEN u.action = 'send_message' THEN 1 ELSE 0 END) as messages_sent
+           FROM usage_stats u
+           LEFT JOIN whitelist w ON u.tg_user_id = w.tg_id
+           GROUP BY u.tg_user_id
+           ORDER BY total_actions DESC"""
+    )
+    return [dict(r) for r in rows]
