@@ -7,7 +7,13 @@ import os
 import re
 import tempfile
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -84,6 +90,20 @@ STATUS_LABELS = {
 
 def _format_status(status: str) -> str:
     return STATUS_LABELS.get(status, f"❓ {status}")
+
+
+def _reply_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
+    """Persistent bottom keyboard with main actions."""
+    buttons = [
+        [KeyboardButton("📝 Новая сессия"), KeyboardButton("📋 Сессии")],
+        [KeyboardButton("📌 Текущая"), KeyboardButton("📊 Статус")],
+        [KeyboardButton("💰 Расход"), KeyboardButton("📋 Меню")],
+    ]
+    if is_admin:
+        buttons.append(
+            [KeyboardButton("🔑 Ключи"), KeyboardButton("📜 Лог")]
+        )
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 
 def _main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
@@ -342,20 +362,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     user = update.effective_user
     is_user_admin = await db.is_admin(user.id)
-    keyboard = _main_menu_keyboard(is_user_admin)
+    reply_kb = _reply_keyboard(is_user_admin)
 
     await update.message.reply_text(
         "🤖 *Devin Telegram Bot*\n\n"
-        "Управление сессиями Devin AI прямо из Telegram.\n\n"
-        "Используйте кнопки ниже или команды:\n"
-        "/newsession `<задача>` — новая сессия\n"
-        "/sessions — все сессии\n"
-        "/switch `<id>` — переключить сессию\n"
-        "/cost — расход по ключам\n"
-        "/log — лог действий\n"
-        "/menu — показать меню",
+        "Управление сессиями Devin AI прямо из Telegram.\n"
+        "Используйте кнопки внизу экрана!",
         parse_mode="Markdown",
-        reply_markup=keyboard,
+        reply_markup=reply_kb,
     )
 
 
@@ -1099,12 +1113,51 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # Text message handler (send to active session)
 # ---------------------------------------------------------------------------
 
+REPLY_KB_ACTIONS = {
+    "📝 Новая сессия": "kb_newsession",
+    "📋 Сессии": "kb_sessions",
+    "📌 Текущая": "kb_session",
+    "📊 Статус": "kb_status",
+    "💰 Расход": "kb_cost",
+    "📋 Меню": "kb_menu",
+    "🔑 Ключи": "kb_keys",
+    "📜 Лог": "kb_log",
+}
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _check_whitelist(update):
         return
 
     text = update.message.text
     if not text:
+        return
+
+    # Handle reply keyboard button presses
+    kb_action = REPLY_KB_ACTIONS.get(text)
+    if kb_action:
+        user = update.effective_user
+        if kb_action == "kb_newsession":
+            await update.message.reply_text(
+                "📝 Отправьте команду:\n`/newsession <описание задачи>`\n\n"
+                "Пример: `/newsession Исправь баг в main.py`",
+                parse_mode="Markdown",
+            )
+        elif kb_action == "kb_sessions":
+            context.args = []
+            await cmd_sessions(update, context)
+        elif kb_action == "kb_session":
+            await cmd_session(update, context)
+        elif kb_action == "kb_status":
+            await cmd_status(update, context)
+        elif kb_action == "kb_cost":
+            await cmd_cost(update, context)
+        elif kb_action == "kb_menu":
+            await cmd_menu(update, context)
+        elif kb_action == "kb_keys":
+            await cmd_keys(update, context)
+        elif kb_action == "kb_log":
+            await cmd_log(update, context)
         return
 
     session = await db.get_active_session(update.effective_user.id)
