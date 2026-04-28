@@ -1,5 +1,6 @@
 """Devin API client with automatic key rotation."""
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -151,14 +152,30 @@ async def create_session(prompt: str, title: str | None = None) -> tuple[dict, i
     return result, key_id  # type: ignore[return-value]
 
 
-async def send_message(session_id: str, message: str) -> dict | None:
-    """Send a message to an existing Devin session."""
-    result, _ = await _request_with_rotation(
-        "POST",
-        f"/sessions/{session_id}/message",
-        {"message": message},
-    )
-    return result
+async def send_message(
+    session_id: str, message: str, max_init_retries: int = 6
+) -> dict | None:
+    """Send a message to an existing Devin session.
+
+    Automatically retries if session is still initializing (up to ~30s).
+    """
+    for attempt in range(max_init_retries):
+        try:
+            result, _ = await _request_with_rotation(
+                "POST",
+                f"/sessions/{session_id}/message",
+                {"message": message},
+            )
+            return result
+        except DevinAPIError as e:
+            if "still initializing" in e.detail.lower() and attempt < max_init_retries - 1:
+                logger.info(
+                    "Session %s still initializing, retry %d/%d...",
+                    session_id, attempt + 1, max_init_retries,
+                )
+                await asyncio.sleep(5)
+                continue
+            raise
 
 
 async def get_session(session_id: str) -> dict:
