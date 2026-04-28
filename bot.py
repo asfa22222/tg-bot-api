@@ -1,9 +1,10 @@
 """Telegram bot for Devin AI session management."""
 
+import io
 import logging
 import os
-import tempfile
 import re
+import tempfile
 
 from telegram import Update
 from telegram.ext import (
@@ -87,6 +88,91 @@ def _format_status(status: str) -> str:
 # Polling — check Devin sessions for status updates
 # ---------------------------------------------------------------------------
 
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+URL_PATTERN = re.compile(r'https?://\S+')
+ATTACHMENT_URL_PATTERN = re.compile(r'https://[^\s"]+devin\.ai/attachments/[^\s"]+')
+
+
+async def _send_url_as_file(bot, chat_id: int, url: str, caption: str = "") -> bool:
+    """Download a URL and send it as photo or document to Telegram. Returns True on success."""
+    try:
+        file_data = await devin_api.download_file(url)
+    except Exception as e:
+        logger.warning("Failed to download %s: %s", url, e)
+        return False
+
+    # Determine filename from URL
+    filename = url.rsplit("/", 1)[-1].split("?")[0] or "file"
+    is_image = any(filename.lower().endswith(ext) for ext in IMAGE_EXTENSIONS)
+
+    try:
+        bio = io.BytesIO(file_data)
+        bio.name = filename
+
+        if is_image:
+            await bot.send_photo(
+                chat_id=chat_id,
+                photo=bio,
+                caption=caption[:1024] if caption else None,
+            )
+        else:
+            await bot.send_document(
+                chat_id=chat_id,
+                document=bio,
+                filename=filename,
+                caption=caption[:1024] if caption else None,
+            )
+        return True
+    except Exception as e:
+        logger.error("Failed to send file to Telegram: %s", e)
+        return False
+
+
+async def _forward_devin_message(bot, chat_id: int, msg: dict) -> None:
+    """Forward a single Devin message — text and any embedded attachments."""
+    text = msg.get("message", "").strip()
+    if not text:
+        return
+
+    # Extract attachment URLs from the message
+    attachment_urls = ATTACHMENT_URL_PATTERN.findall(text)
+
+    # Also look for image URLs in markdown syntax: ![alt](url)
+    md_images = re.findall(r'!\[.*?\]\((https?://\S+?)\)', text)
+    for img_url in md_images:
+        if img_url not in attachment_urls:
+            attachment_urls.append(img_url)
+
+    # Clean text: remove ATTACHMENT:"..." lines for cleaner display
+    clean_text = re.sub(r'ATTACHMENT:"[^"]*"\s*', '', text).strip()
+
+    # Send text message if there's meaningful content
+    if clean_text:
+        if len(clean_text) > 3500:
+            clean_text = clean_text[:3500] + "\n\n... _(сообщение обрезано)_"
+
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"🤖 *Devin:*\n\n{clean_text}",
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=f"🤖 Devin:\n\n{clean_text}",
+                    disable_web_page_preview=True,
+                )
+            except Exception as e:
+                logger.error("Failed to send text message: %s", e)
+
+    # Download and send each attachment
+    for url in attachment_urls:
+        await _send_url_as_file(bot, chat_id, url, caption="📎 Файл от Devin")
+
+
 async def _poll_sessions(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Background job: poll sessions for new messages and status changes."""
     sessions = await db.get_polling_sessions()
@@ -102,11 +188,10 @@ async def _poll_sessions(context: ContextTypes.DEFAULT_TYPE) -> None:
         messages = info.get("messages", [])
         last_event_id = sess["last_event_id"] or ""
         new_msgs = []
-        found_last = not last_event_id  # if no last_event_id, all are new
+        found_last = not last_event_id
 
         for msg in messages:
             if found_last:
-                # Only forward messages from Devin (not user's own)
                 msg_type = msg.get("type", "")
                 if msg_type != "user_message":
                     new_msgs.append(msg)
@@ -114,38 +199,14 @@ async def _poll_sessions(context: ContextTypes.DEFAULT_TYPE) -> None:
                 found_last = True
 
         if new_msgs:
-            # Update last_event_id to the latest message
             latest_event_id = messages[-1].get("event_id", last_event_id)
             await db.update_session_last_event_id(sess["id"], latest_event_id)
 
             for msg in new_msgs:
-                text = msg.get("message", "").strip()
-                if not text:
-                    continue
-
-                # Truncate very long messages for Telegram (4096 char limit)
-                if len(text) > 3500:
-                    text = text[:3500] + "\n\n... _(сообщение обрезано)_"
-
-                try:
-                    await context.bot.send_message(
-                        chat_id=sess["tg_chat_id"],
-                        text=f"🤖 *Devin:*\n\n{text}",
-                        parse_mode="Markdown",
-                        disable_web_page_preview=True,
-                    )
-                except Exception:
-                    # Retry without markdown if parsing fails
-                    try:
-                        await context.bot.send_message(
-                            chat_id=sess["tg_chat_id"],
-                            text=f"🤖 Devin:\n\n{text}",
-                            disable_web_page_preview=True,
-                        )
-                    except Exception as e:
-                        logger.error("Failed to send message: %s", e)
+                await _forward_devin_message(
+                    context.bot, sess["tg_chat_id"], msg
+                )
         elif not last_event_id and messages:
-            # First poll — just record the latest event_id without sending
             await db.update_session_last_event_id(
                 sess["id"], messages[-1].get("event_id", "")
             )
