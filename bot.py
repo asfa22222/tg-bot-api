@@ -1,6 +1,7 @@
 """Telegram bot for Devin AI session management."""
 
 import io
+import json
 import logging
 import os
 import re
@@ -89,21 +90,75 @@ def _format_status(status: str) -> str:
 # ---------------------------------------------------------------------------
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
-URL_PATTERN = re.compile(r'https?://\S+')
-ATTACHMENT_URL_PATTERN = re.compile(r'https://[^\s"]+devin\.ai/attachments/[^\s"]+')
+
+
+def _extract_attachment_urls(text: str) -> list[str]:
+    """Extract all attachment URLs from a Devin message.
+
+    Handles multiple formats:
+      - ATTACHMENT:{"url":"https://...","fileSize":123}
+      - ATTACHMENT:"https://..."
+      - ![alt](https://...devin.ai/attachments/...)
+      - Plain https://...devin.ai/attachments/... URLs
+    """
+    urls: list[str] = []
+
+    # Format 1: ATTACHMENT:{JSON} — e.g. ATTACHMENT:{"url":"https://..."}
+    for m in re.finditer(r'ATTACHMENT:\s*(\{[^}]+\})', text):
+        try:
+            data = json.loads(m.group(1))
+            if "url" in data:
+                urls.append(data["url"])
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # Format 2: ATTACHMENT:"url"
+    for m in re.finditer(r'ATTACHMENT:\s*"([^"]+)"', text):
+        url = m.group(1)
+        if url not in urls:
+            urls.append(url)
+
+    # Format 3: Markdown images ![alt](url)
+    for m in re.finditer(r'!\[.*?\]\((https?://\S+?)\)', text):
+        url = m.group(1)
+        if url not in urls:
+            urls.append(url)
+
+    # Format 4: Plain devin attachment URLs
+    for m in re.finditer(r'https://[^\s"}\]]+devin\.ai/attachments/[^\s"}\]]+', text):
+        url = m.group(0)
+        if url not in urls:
+            urls.append(url)
+
+    return urls
 
 
 async def _send_url_as_file(bot, chat_id: int, url: str, caption: str = "") -> bool:
-    """Download a URL and send it as photo or document to Telegram. Returns True on success."""
+    """Download a URL and send it as photo or document to Telegram."""
     try:
         file_data = await devin_api.download_file(url)
     except Exception as e:
         logger.warning("Failed to download %s: %s", url, e)
         return False
 
+    if not file_data:
+        return False
+
     # Determine filename from URL
     filename = url.rsplit("/", 1)[-1].split("?")[0] or "file"
     is_image = any(filename.lower().endswith(ext) for ext in IMAGE_EXTENSIONS)
+
+    # Also check by content (first bytes magic)
+    if not is_image and len(file_data) > 4:
+        header = file_data[:4]
+        if header[:3] == b'\xff\xd8\xff':  # JPEG
+            is_image = True
+            if not any(filename.lower().endswith(e) for e in IMAGE_EXTENSIONS):
+                filename += ".jpg"
+        elif header[:4] == b'\x89PNG':  # PNG
+            is_image = True
+            if not any(filename.lower().endswith(e) for e in IMAGE_EXTENSIONS):
+                filename += ".png"
 
     try:
         bio = io.BytesIO(file_data)
@@ -134,17 +189,13 @@ async def _forward_devin_message(bot, chat_id: int, msg: dict) -> None:
     if not text:
         return
 
-    # Extract attachment URLs from the message
-    attachment_urls = ATTACHMENT_URL_PATTERN.findall(text)
+    # Extract all attachment URLs
+    attachment_urls = _extract_attachment_urls(text)
 
-    # Also look for image URLs in markdown syntax: ![alt](url)
-    md_images = re.findall(r'!\[.*?\]\((https?://\S+?)\)', text)
-    for img_url in md_images:
-        if img_url not in attachment_urls:
-            attachment_urls.append(img_url)
-
-    # Clean text: remove ATTACHMENT:"..." lines for cleaner display
-    clean_text = re.sub(r'ATTACHMENT:"[^"]*"\s*', '', text).strip()
+    # Clean text: remove all ATTACHMENT:... patterns for cleaner display
+    clean_text = re.sub(r'ATTACHMENT:\s*\{[^}]+\}\s*', '', text)
+    clean_text = re.sub(r'ATTACHMENT:\s*"[^"]*"\s*', '', clean_text)
+    clean_text = clean_text.strip()
 
     # Send text message if there's meaningful content
     if clean_text:
@@ -168,9 +219,19 @@ async def _forward_devin_message(bot, chat_id: int, msg: dict) -> None:
             except Exception as e:
                 logger.error("Failed to send text message: %s", e)
 
-    # Download and send each attachment
+    # Download and send each attachment as photo/file
     for url in attachment_urls:
-        await _send_url_as_file(bot, chat_id, url, caption="📎 Файл от Devin")
+        sent = await _send_url_as_file(bot, chat_id, url, caption="📎 От Devin")
+        if not sent:
+            # If download failed, at least send the URL
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=f"📎 Файл от Devin: {url}",
+                    disable_web_page_preview=False,
+                )
+            except Exception:
+                pass
 
 
 async def _poll_sessions(context: ContextTypes.DEFAULT_TYPE) -> None:
