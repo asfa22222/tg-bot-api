@@ -49,6 +49,7 @@ async def _init_tables(db: aiosqlite.Connection) -> None:
             title TEXT,
             status TEXT DEFAULT 'running',
             last_status TEXT DEFAULT '',
+            last_event_id TEXT DEFAULT '',
             polling_active INTEGER DEFAULT 1,
             api_key_id INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -242,7 +243,7 @@ async def get_polling_sessions() -> list[dict]:
     db = await get_db()
     rows = await db.execute_fetchall(
         """SELECT id, devin_session_id, devin_url, tg_user_id, tg_chat_id,
-                  title, status, last_status
+                  title, status, last_status, last_event_id
            FROM sessions
            WHERE polling_active = 1"""
     )
@@ -254,6 +255,15 @@ async def update_session_last_status(session_row_id: int, last_status: str) -> N
     await db.execute(
         "UPDATE sessions SET last_status = ? WHERE id = ?",
         (last_status, session_row_id),
+    )
+    await db.commit()
+
+
+async def update_session_last_event_id(session_row_id: int, event_id: str) -> None:
+    db = await get_db()
+    await db.execute(
+        "UPDATE sessions SET last_event_id = ? WHERE id = ?",
+        (event_id, session_row_id),
     )
     await db.commit()
 

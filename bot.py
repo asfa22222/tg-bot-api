@@ -88,7 +88,7 @@ def _format_status(status: str) -> str:
 # ---------------------------------------------------------------------------
 
 async def _poll_sessions(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Background job: poll all active sessions for status changes."""
+    """Background job: poll sessions for new messages and status changes."""
     sessions = await db.get_polling_sessions()
 
     for sess in sessions:
@@ -98,10 +98,63 @@ async def _poll_sessions(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.warning("Poll error for session %s: %s", sess["devin_session_id"], e)
             continue
 
+        # --- Forward new Devin messages ---
+        messages = info.get("messages", [])
+        last_event_id = sess["last_event_id"] or ""
+        new_msgs = []
+        found_last = not last_event_id  # if no last_event_id, all are new
+
+        for msg in messages:
+            if found_last:
+                # Only forward messages from Devin (not user's own)
+                msg_type = msg.get("type", "")
+                if msg_type != "user_message":
+                    new_msgs.append(msg)
+            elif msg.get("event_id") == last_event_id:
+                found_last = True
+
+        if new_msgs:
+            # Update last_event_id to the latest message
+            latest_event_id = messages[-1].get("event_id", last_event_id)
+            await db.update_session_last_event_id(sess["id"], latest_event_id)
+
+            for msg in new_msgs:
+                text = msg.get("message", "").strip()
+                if not text:
+                    continue
+
+                # Truncate very long messages for Telegram (4096 char limit)
+                if len(text) > 3500:
+                    text = text[:3500] + "\n\n... _(сообщение обрезано)_"
+
+                try:
+                    await context.bot.send_message(
+                        chat_id=sess["tg_chat_id"],
+                        text=f"🤖 *Devin:*\n\n{text}",
+                        parse_mode="Markdown",
+                        disable_web_page_preview=True,
+                    )
+                except Exception:
+                    # Retry without markdown if parsing fails
+                    try:
+                        await context.bot.send_message(
+                            chat_id=sess["tg_chat_id"],
+                            text=f"🤖 Devin:\n\n{text}",
+                            disable_web_page_preview=True,
+                        )
+                    except Exception as e:
+                        logger.error("Failed to send message: %s", e)
+        elif not last_event_id and messages:
+            # First poll — just record the latest event_id without sending
+            await db.update_session_last_event_id(
+                sess["id"], messages[-1].get("event_id", "")
+            )
+
+        # --- Status change notifications ---
         current_status = info.get("status_enum", info.get("status", "unknown"))
         last_status = sess["last_status"] or ""
 
-        if current_status != last_status:
+        if current_status and current_status != last_status:
             await db.update_session_last_status(sess["id"], current_status)
             await db.update_session_status(sess["id"], current_status)
 
@@ -121,10 +174,9 @@ async def _poll_sessions(context: ContextTypes.DEFAULT_TYPE) -> None:
                     disable_web_page_preview=True,
                 )
             except Exception as e:
-                logger.error("Failed to send poll update: %s", e)
+                logger.error("Failed to send status update: %s", e)
 
-            # Stop polling terminal states
-            if current_status in ("finished", "stopped", "error"):
+            if current_status in ("finished", "stopped", "error", "expired"):
                 await db.stop_polling_session(sess["id"])
 
 
