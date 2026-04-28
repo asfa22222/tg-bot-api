@@ -206,18 +206,44 @@ async def upload_file(file_path: str, filename: str) -> str:
 
 
 async def download_file(url: str) -> bytes:
-    """Download a file from a URL (e.g. attachment URL)."""
+    """Download a file from a URL (e.g. attachment URL).
+
+    Handles multiple URL formats:
+      - https://app.devin.ai/attachments/{uuid}/{filename}
+      - https://api.devin.ai/v1/attachments/{uuid}/{filename}
+      - Any direct URL
+    """
+    import re
+
     _, api_key = await _get_current_key()
+    headers = {"Authorization": f"Bearer {api_key}"}
 
-    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-        if "api.devin.ai" in url:
-            resp = await client.get(
-                url, headers={"Authorization": f"Bearer {api_key}"}
+    # Convert app.devin.ai URL to API URL
+    # app.devin.ai/attachments/UUID/filename -> api.devin.ai/v1/attachments/UUID/filename
+    m = re.match(r'https://app\.devin\.ai/attachments/([^/]+)/(.+)', url)
+    if m:
+        api_url = f"{DEVIN_API_BASE}/attachments/{m.group(1)}/{m.group(2)}"
+        logger.info("Converted attachment URL: %s -> %s", url, api_url)
+    elif "devin.ai" in url:
+        api_url = url
+    else:
+        api_url = None
+
+    # Try API download with auth first
+    if api_url:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            resp = await client.get(api_url, headers=headers)
+            if resp.status_code == 200 and resp.content:
+                return resp.content
+            logger.warning(
+                "API download failed (%d), trying direct URL: %s",
+                resp.status_code, url,
             )
-        else:
-            resp = await client.get(url)
 
-    if resp.status_code == 200:
-        return resp.content
+    # Fallback: try direct download without auth
+    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+        resp = await client.get(url)
+        if resp.status_code == 200 and resp.content:
+            return resp.content
 
     raise DevinAPIError(resp.status_code, f"Failed to download: {url}")

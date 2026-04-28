@@ -221,9 +221,10 @@ async def _forward_devin_message(bot, chat_id: int, msg: dict) -> None:
 
     # Download and send each attachment as photo/file
     for url in attachment_urls:
+        logger.info("Downloading attachment: %s", url)
         sent = await _send_url_as_file(bot, chat_id, url, caption="📎 От Devin")
         if not sent:
-            # If download failed, at least send the URL
+            logger.warning("Failed to send attachment, sending URL instead: %s", url)
             try:
                 await bot.send_message(
                     chat_id=chat_id,
