@@ -220,7 +220,7 @@ async def get_active_session(tg_user_id: int) -> dict | None:
     return dict(rows[0]) if rows else None
 
 
-async def list_user_sessions(tg_user_id: int, limit: int = 10) -> list[dict]:
+async def list_user_sessions(tg_user_id: int, limit: int = 50) -> list[dict]:
     db = await get_db()
     rows = await db.execute_fetchall(
         """SELECT id, devin_session_id, devin_url, title, status, created_at
@@ -228,6 +228,39 @@ async def list_user_sessions(tg_user_id: int, limit: int = 10) -> list[dict]:
         (tg_user_id, limit),
     )
     return [dict(r) for r in rows]
+
+
+async def get_session_by_id(session_row_id: int, tg_user_id: int) -> dict | None:
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT * FROM sessions WHERE id = ? AND tg_user_id = ?",
+        (session_row_id, tg_user_id),
+    )
+    return dict(rows[0]) if rows else None
+
+
+async def delete_session(session_row_id: int, tg_user_id: int) -> bool:
+    db = await get_db()
+    # Remove from active_session if it's the active one
+    await db.execute(
+        "DELETE FROM active_session WHERE tg_user_id = ? AND session_id = ?",
+        (tg_user_id, session_row_id),
+    )
+    cursor = await db.execute(
+        "DELETE FROM sessions WHERE id = ? AND tg_user_id = ?",
+        (session_row_id, tg_user_id),
+    )
+    await db.commit()
+    return cursor.rowcount > 0
+
+
+async def set_active_session(tg_user_id: int, session_row_id: int) -> None:
+    db = await get_db()
+    await db.execute(
+        "INSERT OR REPLACE INTO active_session (tg_user_id, session_id) VALUES (?, ?)",
+        (tg_user_id, session_row_id),
+    )
+    await db.commit()
 
 
 async def update_session_status(session_row_id: int, status: str) -> None:

@@ -256,7 +256,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/newsession `<задача>` — создать новую сессию\n"
         "/session — текущая активная сессия\n"
         "/status — статус текущей сессии\n"
-        "/sessions — список последних сессий\n"
+        "/sessions — все сессии с ID\n"
+        "/switch `<id>` — переключиться на сессию\n"
+        "/delsession `<id>` — удалить сессию\n"
         "Текстовое сообщение → отправляется в текущую сессию\n"
         "Файлы/картинки → загружаются и отправляются в сессию\n\n"
         "*API ключи (админ):*\n"
@@ -385,17 +387,85 @@ async def cmd_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("Нет сессий. Создайте: /newsession <задача>")
         return
 
-    lines = ["📋 *Последние сессии:*\n"]
+    active = await db.get_active_session(update.effective_user.id)
+    active_id = active["id"] if active else None
+
+    lines = ["📋 *Все сессии:*\n"]
     for s in sessions:
         title = s["title"] or "Без названия"
         status_icon = _format_status(s["status"]).split(" ")[0]
-        lines.append(f"{status_icon} [{title}]({s['devin_url']})")
+        marker = "➡️ " if s["id"] == active_id else ""
+        lines.append(
+            f"{marker}{status_icon} `{s['id']}` | {title}\n"
+            f"   🔗 {s['devin_url']}"
+        )
+
+    lines.append(
+        "\n➡️ = активная сессия\n"
+        "Команды: /switch <id> | /delsession <id>"
+    )
 
     await update.message.reply_text(
         "\n".join(lines),
         parse_mode="Markdown",
         disable_web_page_preview=True,
     )
+
+
+async def cmd_switch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _check_whitelist(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Использование: /switch <id сессии>\n"
+            "Посмотреть ID: /sessions"
+        )
+        return
+
+    try:
+        session_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("ID должен быть числом. Посмотреть: /sessions")
+        return
+
+    session = await db.get_session_by_id(session_id, update.effective_user.id)
+    if not session:
+        await update.message.reply_text(f"❌ Сессия ID {session_id} не найдена.")
+        return
+
+    await db.set_active_session(update.effective_user.id, session_id)
+    title = session["title"] or "Без названия"
+    await update.message.reply_text(
+        f"✅ Переключено на сессию `{session_id}`\n"
+        f"📝 {title}\n"
+        f"🔗 {session['devin_url']}",
+        parse_mode="Markdown",
+        disable_web_page_preview=True,
+    )
+
+
+async def cmd_delsession(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _check_whitelist(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Использование: /delsession <id сессии>\n"
+            "Посмотреть ID: /sessions"
+        )
+        return
+
+    try:
+        session_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("ID должен быть числом. Посмотреть: /sessions")
+        return
+
+    if await db.delete_session(session_id, update.effective_user.id):
+        await update.message.reply_text(f"✅ Сессия `{session_id}` удалена.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(f"❌ Сессия ID {session_id} не найдена.")
 
 
 # --- Key management commands ---
@@ -728,6 +798,8 @@ def main() -> None:
     app.add_handler(CommandHandler("session", cmd_session))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("sessions", cmd_sessions))
+    app.add_handler(CommandHandler("switch", cmd_switch))
+    app.add_handler(CommandHandler("delsession", cmd_delsession))
 
     # Key management
     app.add_handler(CommandHandler("addkey", cmd_addkey))
