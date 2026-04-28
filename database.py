@@ -45,8 +45,11 @@ async def _init_tables(db: aiosqlite.Connection) -> None:
             devin_session_id TEXT NOT NULL,
             devin_url TEXT,
             tg_user_id INTEGER NOT NULL,
+            tg_chat_id INTEGER NOT NULL DEFAULT 0,
             title TEXT,
             status TEXT DEFAULT 'running',
+            last_status TEXT DEFAULT '',
+            polling_active INTEGER DEFAULT 1,
             api_key_id INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -186,14 +189,15 @@ async def create_session_record(
     devin_session_id: str,
     devin_url: str,
     tg_user_id: int,
+    tg_chat_id: int,
     title: str | None,
     api_key_id: int,
 ) -> int:
     db = await get_db()
     cursor = await db.execute(
-        """INSERT INTO sessions (devin_session_id, devin_url, tg_user_id, title, api_key_id)
-           VALUES (?, ?, ?, ?, ?)""",
-        (devin_session_id, devin_url, tg_user_id, title, api_key_id),
+        """INSERT INTO sessions (devin_session_id, devin_url, tg_user_id, tg_chat_id, title, api_key_id)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (devin_session_id, devin_url, tg_user_id, tg_chat_id, title, api_key_id),
     )
     session_row_id = cursor.lastrowid
     await db.execute(
@@ -229,5 +233,34 @@ async def update_session_status(session_row_id: int, status: str) -> None:
     db = await get_db()
     await db.execute(
         "UPDATE sessions SET status = ? WHERE id = ?", (status, session_row_id)
+    )
+    await db.commit()
+
+
+async def get_polling_sessions() -> list[dict]:
+    """Get all sessions that should be polled for updates."""
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        """SELECT id, devin_session_id, devin_url, tg_user_id, tg_chat_id,
+                  title, status, last_status
+           FROM sessions
+           WHERE polling_active = 1"""
+    )
+    return [dict(r) for r in rows]
+
+
+async def update_session_last_status(session_row_id: int, last_status: str) -> None:
+    db = await get_db()
+    await db.execute(
+        "UPDATE sessions SET last_status = ? WHERE id = ?",
+        (last_status, session_row_id),
+    )
+    await db.commit()
+
+
+async def stop_polling_session(session_row_id: int) -> None:
+    db = await get_db()
+    await db.execute(
+        "UPDATE sessions SET polling_active = 0 WHERE id = ?", (session_row_id,)
     )
     await db.commit()

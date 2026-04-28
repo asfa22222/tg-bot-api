@@ -1,6 +1,9 @@
 """Telegram bot for Devin AI session management."""
 
 import logging
+import os
+import tempfile
+import re
 
 from telegram import Update
 from telegram.ext import (
@@ -21,6 +24,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+POLL_INTERVAL_SECONDS = 15
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -32,12 +37,10 @@ async def _check_whitelist(update: Update) -> bool:
     if user is None:
         return False
 
-    # First user ever becomes admin automatically
     if await db.get_whitelist_count() == 0:
         await db.add_to_whitelist(user.id, user.username, is_admin=True)
-        await update.message.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"Вы первый пользователь — автоматически стали админом.\n"
+        await update.message.reply_text(
+            f"Вы первый пользователь — автоматически стали админом.\n"
             f"Ваш Telegram ID: `{user.id}`",
             parse_mode="Markdown",
         )
@@ -61,10 +64,68 @@ async def _check_admin(update: Update) -> bool:
 
 
 def _mask_key(key: str) -> str:
-    """Show first 8 and last 4 characters of an API key."""
     if len(key) <= 16:
         return key[:4] + "..." + key[-4:]
     return key[:8] + "..." + key[-4:]
+
+
+STATUS_LABELS = {
+    "running": "🟢 Работает",
+    "suspended": "⏸ Ожидает ответа",
+    "blocked": "⏸ Заблокирована",
+    "stopped": "⏹ Остановлена",
+    "finished": "✅ Завершена",
+    "error": "❌ Ошибка",
+}
+
+
+def _format_status(status: str) -> str:
+    return STATUS_LABELS.get(status, f"❓ {status}")
+
+
+# ---------------------------------------------------------------------------
+# Polling — check Devin sessions for status updates
+# ---------------------------------------------------------------------------
+
+async def _poll_sessions(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Background job: poll all active sessions for status changes."""
+    sessions = await db.get_polling_sessions()
+
+    for sess in sessions:
+        try:
+            info = await devin_api.get_session(sess["devin_session_id"])
+        except Exception as e:
+            logger.warning("Poll error for session %s: %s", sess["devin_session_id"], e)
+            continue
+
+        current_status = info.get("status_enum", info.get("status", "unknown"))
+        last_status = sess["last_status"] or ""
+
+        if current_status != last_status:
+            await db.update_session_last_status(sess["id"], current_status)
+            await db.update_session_status(sess["id"], current_status)
+
+            title = sess["title"] or "Без названия"
+            text = (
+                f"🔔 *Статус сессии изменился*\n\n"
+                f"📝 {title}\n"
+                f"📌 {_format_status(last_status)} → {_format_status(current_status)}\n"
+                f"🔗 {sess['devin_url']}"
+            )
+
+            try:
+                await context.bot.send_message(
+                    chat_id=sess["tg_chat_id"],
+                    text=text,
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True,
+                )
+            except Exception as e:
+                logger.error("Failed to send poll update: %s", e)
+
+            # Stop polling terminal states
+            if current_status in ("finished", "stopped", "error"):
+                await db.stop_polling_session(sess["id"])
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +144,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/session — текущая активная сессия\n"
         "/status — статус текущей сессии\n"
         "/sessions — список последних сессий\n"
-        "Любое текстовое сообщение → отправляется в текущую сессию\n\n"
+        "Текстовое сообщение → отправляется в текущую сессию\n"
+        "Файлы/картинки → загружаются и отправляются в сессию\n\n"
         "*API ключи (админ):*\n"
         "/addkey `<ключ>` `[название]` — добавить ключ\n"
         "/keys — список ключей\n"
@@ -100,7 +162,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    await update.message.reply_text(f"Ваш Telegram ID: `{user.id}`", parse_mode="Markdown")
+    await update.message.reply_text(
+        f"Ваш Telegram ID: `{user.id}`", parse_mode="Markdown"
+    )
 
 
 # --- Session commands ---
@@ -117,15 +181,15 @@ async def cmd_newsession(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     prompt = " ".join(context.args)
-    await update.message.reply_text("⏳ Создаю сессию Devin...")
+    msg = await update.message.reply_text("⏳ Создаю сессию Devin...")
 
     try:
         result, key_id = await devin_api.create_session(prompt)
     except devin_api.NoAPIKeysError as e:
-        await update.message.reply_text(f"❌ {e}")
+        await msg.edit_text(f"❌ {e}")
         return
     except devin_api.DevinAPIError as e:
-        await update.message.reply_text(f"❌ Ошибка API: {e.detail}")
+        await msg.edit_text(f"❌ Ошибка API: {e.detail}")
         return
 
     session_id = result["session_id"]
@@ -135,15 +199,18 @@ async def cmd_newsession(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         devin_session_id=session_id,
         devin_url=session_url,
         tg_user_id=update.effective_user.id,
+        tg_chat_id=update.effective_chat.id,
         title=prompt[:100],
         api_key_id=key_id,
     )
 
-    await update.message.reply_text(
-        f"✅ Сессия создана!\n\n"
+    await msg.edit_text(
+        f"✅ *Сессия создана!*\n\n"
         f"🔗 {session_url}\n"
         f"📝 {prompt[:100]}\n\n"
-        f"Теперь можете отправлять сообщения — они пойдут в эту сессию.",
+        f"Теперь можете отправлять сообщения и файлы — они пойдут в эту сессию.\n"
+        f"Бот уведомит вас об изменениях статуса.",
+        parse_mode="Markdown",
         disable_web_page_preview=True,
     )
 
@@ -162,6 +229,7 @@ async def cmd_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(
         f"📌 *Активная сессия*\n\n"
         f"📝 {session['title'] or 'Без названия'}\n"
+        f"📌 Статус: {_format_status(session['status'])}\n"
         f"🔗 {session['devin_url']}\n"
         f"🕐 Создана: {session['created_at']}",
         parse_mode="Markdown",
@@ -189,7 +257,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"📊 *Статус сессии*\n\n"
         f"📝 {session['title'] or 'Без названия'}\n"
         f"🔗 {session['devin_url']}\n"
-        f"📌 Статус: `{status}`",
+        f"📌 Статус: {_format_status(status)}",
         parse_mode="Markdown",
         disable_web_page_preview=True,
     )
@@ -207,9 +275,8 @@ async def cmd_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     lines = ["📋 *Последние сессии:*\n"]
     for s in sessions:
         title = s["title"] or "Без названия"
-        lines.append(
-            f"• [{title}]({s['devin_url']}) — {s['created_at']}"
-        )
+        status_icon = _format_status(s["status"]).split(" ")[0]
+        lines.append(f"{status_icon} [{title}]({s['devin_url']})")
 
     await update.message.reply_text(
         "\n".join(lines),
@@ -240,7 +307,6 @@ async def cmd_addkey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("❌ Этот ключ уже добавлен.")
         return
 
-    # Delete the message with the key for security
     try:
         await update.message.delete()
     except Exception:
@@ -248,9 +314,10 @@ async def cmd_addkey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=f"✅ Ключ добавлен (ID: {key_id}, {_mask_key(key)})\n"
+        text=f"✅ Ключ добавлен (ID: {key_id}, `{_mask_key(key)}`)\n"
         f"Название: {label or '—'}\n\n"
         f"💡 Сообщение с ключом удалено для безопасности.",
+        parse_mode="Markdown",
     )
 
 
@@ -311,7 +378,9 @@ async def cmd_switchkey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     keys = await db.get_active_keys()
     if len(keys) < 2:
-        await update.message.reply_text("Нужно минимум 2 активных ключа для переключения.")
+        await update.message.reply_text(
+            "Нужно минимум 2 активных ключа для переключения."
+        )
         return
 
     idx = await db.get_current_key_index()
@@ -349,7 +418,9 @@ async def cmd_adduser(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await db.add_to_whitelist(tg_id, is_admin=is_admin)
 
     role = "админ" if is_admin else "пользователь"
-    await update.message.reply_text(f"✅ Добавлен {role}: `{tg_id}`", parse_mode="Markdown")
+    await update.message.reply_text(
+        f"✅ Добавлен {role}: `{tg_id}`", parse_mode="Markdown"
+    )
 
 
 async def cmd_removeuser(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -371,9 +442,13 @@ async def cmd_removeuser(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if await db.remove_from_whitelist(tg_id):
-        await update.message.reply_text(f"✅ Пользователь `{tg_id}` удалён.", parse_mode="Markdown")
+        await update.message.reply_text(
+            f"✅ Пользователь `{tg_id}` удалён.", parse_mode="Markdown"
+        )
     else:
-        await update.message.reply_text(f"❌ Пользователь `{tg_id}` не найден.", parse_mode="Markdown")
+        await update.message.reply_text(
+            f"❌ Пользователь `{tg_id}` не найден.", parse_mode="Markdown"
+        )
 
 
 async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -394,7 +469,9 @@ async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
-# --- Text message handler (send to active session) ---
+# ---------------------------------------------------------------------------
+# Text message handler (send to active session)
+# ---------------------------------------------------------------------------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _check_whitelist(update):
@@ -424,12 +501,96 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 # ---------------------------------------------------------------------------
+# File/photo/document handler — upload to Devin and send as attachment
+# ---------------------------------------------------------------------------
+
+async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _check_whitelist(update):
+        return
+
+    session = await db.get_active_session(update.effective_user.id)
+    if not session:
+        await update.message.reply_text(
+            "Нет активной сессии. Создайте: /newsession <задача>"
+        )
+        return
+
+    # Get the file object from the message
+    file_obj = None
+    filename = "file"
+    caption = update.message.caption or ""
+
+    if update.message.photo:
+        # Photos come as a list of sizes, take the largest
+        file_obj = await update.message.photo[-1].get_file()
+        filename = f"photo_{file_obj.file_unique_id}.jpg"
+    elif update.message.document:
+        file_obj = await update.message.document.get_file()
+        filename = update.message.document.file_name or f"doc_{file_obj.file_unique_id}"
+    elif update.message.video:
+        file_obj = await update.message.video.get_file()
+        filename = update.message.video.file_name or f"video_{file_obj.file_unique_id}.mp4"
+    elif update.message.audio:
+        file_obj = await update.message.audio.get_file()
+        filename = update.message.audio.file_name or f"audio_{file_obj.file_unique_id}"
+    elif update.message.voice:
+        file_obj = await update.message.voice.get_file()
+        filename = f"voice_{file_obj.file_unique_id}.ogg"
+
+    if file_obj is None:
+        await update.message.reply_text("❌ Не удалось получить файл.")
+        return
+
+    msg = await update.message.reply_text(f"⏳ Загружаю файл `{filename}` в Devin...", parse_mode="Markdown")
+
+    try:
+        # Download from Telegram
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{filename}") as tmp:
+            tmp_path = tmp.name
+            await file_obj.download_to_drive(tmp_path)
+
+        # Upload to Devin
+        attachment_url = await devin_api.upload_file(tmp_path, filename)
+
+        # Send message to session with attachment
+        message_text = caption if caption else f"Файл: {filename}"
+        message_text += f'\n\nATTACHMENT:"{attachment_url}"'
+
+        await devin_api.send_message(session["devin_session_id"], message_text)
+
+        await msg.edit_text(
+            f"✅ Файл `{filename}` отправлен в сессию.\n🔗 {session['devin_url']}",
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+        )
+    except devin_api.DevinAPIError as e:
+        await msg.edit_text(f"❌ Ошибка: {e.detail}")
+    except Exception as e:
+        logger.error("File upload error: %s", e, exc_info=True)
+        await msg.edit_text(f"❌ Ошибка загрузки файла: {e}")
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # App lifecycle
 # ---------------------------------------------------------------------------
 
 async def post_init(application: Application) -> None:
     await db.get_db()
     logger.info("Database initialized")
+
+    # Start background polling job
+    application.job_queue.run_repeating(
+        _poll_sessions,
+        interval=POLL_INTERVAL_SECONDS,
+        first=10,
+        name="poll_sessions",
+    )
+    logger.info("Session polling started (every %ds)", POLL_INTERVAL_SECONDS)
 
 
 async def post_shutdown(application: Application) -> None:
@@ -438,7 +599,13 @@ async def post_shutdown(application: Application) -> None:
 
 
 def main() -> None:
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
+    app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
 
     # Session commands
     app.add_handler(CommandHandler("start", cmd_start))
@@ -459,6 +626,14 @@ def main() -> None:
     app.add_handler(CommandHandler("adduser", cmd_adduser))
     app.add_handler(CommandHandler("removeuser", cmd_removeuser))
     app.add_handler(CommandHandler("users", cmd_users))
+
+    # File/photo/document handlers
+    app.add_handler(
+        MessageHandler(
+            filters.PHOTO | filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.VOICE,
+            handle_file,
+        )
+    )
 
     # Text messages → active session
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
