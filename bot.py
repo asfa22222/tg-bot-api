@@ -839,45 +839,124 @@ async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Broadcast message to all users. Supports text, photos, documents, video.
+
+    Usage:
+      /broadcast <text>                    — send text
+      Reply to a photo/file with /broadcast — forward that media to all
+      Send photo with caption /broadcast <text> — send photo+text to all
+    """
     if not await _check_admin(update):
         return
 
-    if not context.args:
+    text = " ".join(context.args) if context.args else ""
+    reply = update.message.reply_to_message
+
+    # Determine what to broadcast
+    has_photo = update.message.photo
+    has_document = update.message.document
+    has_video = update.message.video
+    reply_photo = reply and reply.photo
+    reply_document = reply and reply.document
+    reply_video = reply and reply.video
+
+    # Get caption text
+    if not text and update.message.caption:
+        # /broadcast in caption of a photo
+        caption_text = update.message.caption
+        # Remove the /broadcast command from caption
+        caption_text = re.sub(r'^/broadcast\s*', '', caption_text).strip()
+        if caption_text:
+            text = caption_text
+    if not text and reply and reply.caption:
+        text = reply.caption
+
+    has_media = has_photo or has_document or has_video or reply_photo or reply_document or reply_video
+
+    if not text and not has_media:
         await update.message.reply_text(
-            "Использование: /broadcast <сообщение>\n"
-            "Пример: /broadcast Бот обновлён! Добавлены новые функции."
+            "📢 *Рассылка — как использовать:*\n\n"
+            "1️⃣ Текст: `/broadcast Привет всем!`\n"
+            "2️⃣ Фото: отправьте фото с подписью `/broadcast Текст`\n"
+            "3️⃣ Ответ: ответьте на фото/файл командой `/broadcast`\n"
+            "4️⃣ Файл: ответьте на документ/видео командой `/broadcast`",
+            parse_mode="Markdown",
         )
         return
 
-    text = " ".join(context.args)
     users = await db.list_whitelist()
-
     if not users:
         await update.message.reply_text("Вайтлист пуст — некому отправлять.")
         return
 
-    msg = await update.message.reply_text(
+    status_msg = await update.message.reply_text(
         f"📤 Рассылка {len(users)} пользователям..."
     )
+
+    broadcast_caption = f"📢 *Рассылка от админа:*\n\n{text}" if text else "📢 *Рассылка от админа*"
 
     sent = 0
     failed = 0
     for u in users:
         try:
-            await context.bot.send_message(
-                chat_id=u["tg_id"],
-                text=f"📢 *Рассылка от админа:*\n\n{text}",
-                parse_mode="Markdown",
-            )
+            if has_photo:
+                await context.bot.send_photo(
+                    chat_id=u["tg_id"],
+                    photo=update.message.photo[-1].file_id,
+                    caption=broadcast_caption,
+                    parse_mode="Markdown",
+                )
+            elif has_document:
+                await context.bot.send_document(
+                    chat_id=u["tg_id"],
+                    document=update.message.document.file_id,
+                    caption=broadcast_caption,
+                    parse_mode="Markdown",
+                )
+            elif has_video:
+                await context.bot.send_video(
+                    chat_id=u["tg_id"],
+                    video=update.message.video.file_id,
+                    caption=broadcast_caption,
+                    parse_mode="Markdown",
+                )
+            elif reply_photo:
+                await context.bot.send_photo(
+                    chat_id=u["tg_id"],
+                    photo=reply.photo[-1].file_id,
+                    caption=broadcast_caption,
+                    parse_mode="Markdown",
+                )
+            elif reply_document:
+                await context.bot.send_document(
+                    chat_id=u["tg_id"],
+                    document=reply.document.file_id,
+                    caption=broadcast_caption,
+                    parse_mode="Markdown",
+                )
+            elif reply_video:
+                await context.bot.send_video(
+                    chat_id=u["tg_id"],
+                    video=reply.video.file_id,
+                    caption=broadcast_caption,
+                    parse_mode="Markdown",
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=u["tg_id"],
+                    text=broadcast_caption,
+                    parse_mode="Markdown",
+                )
             sent += 1
         except Exception as e:
             logger.warning("Broadcast failed for %s: %s", u["tg_id"], e)
             failed += 1
 
     user = update.effective_user
-    await db.log_activity(user.id, "broadcast", f"{sent} ok, {failed} fail: {text[:50]}", user.username)
+    media_type = "photo" if (has_photo or reply_photo) else "document" if (has_document or reply_document) else "video" if (has_video or reply_video) else "text"
+    await db.log_activity(user.id, "broadcast", f"{media_type}, {sent} ok, {failed} fail: {text[:40]}", user.username)
 
-    await msg.edit_text(
+    await status_msg.edit_text(
         f"✅ Рассылка завершена!\n\n"
         f"📨 Отправлено: {sent}\n"
         f"❌ Не доставлено: {failed}\n"
@@ -1311,6 +1390,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _check_whitelist(update):
+        return
+
+    # Check if this is a broadcast with media (caption starts with /broadcast)
+    caption = update.message.caption or ""
+    if caption.startswith("/broadcast"):
+        args_text = caption.replace("/broadcast", "", 1).strip()
+        context.args = args_text.split() if args_text else []
+        await cmd_broadcast(update, context)
         return
 
     session = await db.get_active_session(update.effective_user.id)
