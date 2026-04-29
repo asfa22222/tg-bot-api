@@ -424,19 +424,32 @@ async def cmd_webapp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not await _check_whitelist(update):
         return
 
-    # Read directly from env for diagnostic
-    url = os.environ.get("WEBAPP_URL", "") or WEBAPP_URL
+    # Try multiple sources for webapp URL
+    url = os.environ.get("WEBAPP_URL", "")
     if not url:
+        # Railway auto-generates RAILWAY_PUBLIC_DOMAIN
+        domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+        if domain:
+            url = f"https://{domain}"
+    if not url:
+        url = WEBAPP_URL
+
+    if not url:
+        # Diagnostic: show all RAILWAY_* and WEBAPP_* env vars
+        diag = []
+        for k, v in sorted(os.environ.items()):
+            if k.startswith(("RAILWAY", "WEBAPP", "PORT")):
+                diag.append(f"`{k}` = `{v[:40]}`")
+        diag_text = "\n".join(diag) if diag else "нет переменных RAILWAY_*/WEBAPP_*"
         await update.message.reply_text(
-            "❌ Mini App не настроен.\n\n"
-            f"Config WEBAPP_URL: '{WEBAPP_URL}'\n"
-            f"Env WEBAPP_URL: '{os.environ.get('WEBAPP_URL', '')}'\n\n"
-            "Установите переменную окружения `WEBAPP_URL`",
+            f"❌ Mini App не настроен.\n\n"
+            f"Диагностика:\n{diag_text}\n\n"
+            f"Нужна переменная `WEBAPP_URL`",
         )
         return
 
     await update.message.reply_text(
-        f"📱 Mini App ({url}):",
+        f"📱 Mini App:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton(
                 "📱 Открыть Mini App",
