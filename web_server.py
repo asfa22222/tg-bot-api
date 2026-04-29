@@ -172,8 +172,14 @@ def create_app() -> web.Application:
     app.router.add_get("/api/keys", handle_keys)
     app.router.add_get("/api/log", handle_log)
 
+    # Serve index.html at root
+    async def handle_index(request: web.Request):
+        return web.FileResponse(os.path.join(WEBAPP_DIR, "index.html"))
+
+    app.router.add_get("/", handle_index)
+
     # Serve Mini App static files
-    app.router.add_static("/", WEBAPP_DIR, show_index=True)
+    app.router.add_static("/static/", WEBAPP_DIR)
 
     return app
 

@@ -1795,6 +1795,7 @@ async def post_init(application: Application) -> None:
     logger.info("Database initialized")
 
     # Start Mini App web server
+    logger.info("WEBAPP_URL = %r", WEBAPP_URL)
     from web_server import start_web_server
     try:
         application.bot_data["web_runner"] = await start_web_server()
