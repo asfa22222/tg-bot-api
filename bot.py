@@ -1443,33 +1443,49 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # Voice message handler — speech-to-text via OpenAI Whisper
 # ---------------------------------------------------------------------------
 
-async def _transcribe_voice(file_bytes: bytes, filename: str = "voice.ogg") -> str | None:
-    """Transcribe audio using OpenAI Whisper API."""
-    if not OPENAI_API_KEY:
-        return None
+async def _transcribe_voice(file_bytes: bytes) -> str | None:
+    """Transcribe audio. Uses OpenAI Whisper if key set, else free Google Speech."""
+    import asyncio
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(
-            "https://api.openai.com/v1/audio/transcriptions",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-            files={"file": (filename, file_bytes, "audio/ogg")},
-            data={"model": "whisper-1"},
-        )
-        resp.raise_for_status()
-        return resp.json().get("text", "").strip()
+    if OPENAI_API_KEY:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                files={"file": ("voice.ogg", file_bytes, "audio/ogg")},
+                data={"model": "whisper-1"},
+            )
+            resp.raise_for_status()
+            return resp.json().get("text", "").strip()
+
+    # Free: Google Speech Recognition via SpeechRecognition + pydub
+    import speech_recognition as sr
+    from pydub import AudioSegment
+
+    def _recognize(audio_bytes: bytes) -> str:
+        ogg_path = os.path.join(tempfile.gettempdir(), "voice_input.ogg")
+        wav_path = os.path.join(tempfile.gettempdir(), "voice_input.wav")
+        try:
+            with open(ogg_path, "wb") as f:
+                f.write(audio_bytes)
+            audio = AudioSegment.from_ogg(ogg_path)
+            audio.export(wav_path, format="wav")
+            recognizer = sr.Recognizer()
+            with sr.AudioFile(wav_path) as source:
+                audio_data = recognizer.record(source)
+            return recognizer.recognize_google(audio_data, language="ru-RU")
+        finally:
+            for p in (ogg_path, wav_path):
+                try:
+                    os.unlink(p)
+                except Exception:
+                    pass
+
+    return await asyncio.to_thread(_recognize, file_bytes)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _check_whitelist(update):
-        return
-
-    if not OPENAI_API_KEY:
-        await update.message.reply_text(
-            "🎙 Голосовые команды не настроены.\n\n"
-            "Админу нужно добавить `OPENAI_API_KEY` в переменные окружения Railway "
-            "для распознавания речи (OpenAI Whisper).",
-            parse_mode="Markdown",
-        )
         return
 
     msg = await update.message.reply_text("🎙 Распознаю речь...")
@@ -1485,14 +1501,17 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await msg.edit_text("❌ Не удалось распознать речь. Попробуйте ещё раз.")
             return
 
-        await msg.edit_text(f"🎙 Распознано:\n\n_{text}_", parse_mode="Markdown")
+        engine = "Whisper" if OPENAI_API_KEY else "Google"
+        await msg.edit_text(
+            f"🎙 Распознано ({engine}):\n\n_{text}_",
+            parse_mode="Markdown",
+        )
 
         # Check if user has an active session
         user = update.effective_user
         session = await db.get_active_session(user.id)
 
         if session:
-            # Ask: create new session or send to current?
             await update.message.reply_text(
                 f"📌 Активная сессия: _{session['title'] or 'Без названия'}_\n\n"
                 f"Что сделать с текстом?",
@@ -1509,7 +1528,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 ]),
             )
         else:
-            # No active session — create one
             context.args = text.split()
             await cmd_newsession(update, context)
 
