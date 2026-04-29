@@ -1030,17 +1030,17 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("📜 Лог пуст.")
         return
 
-    lines = ["📜 *Последние действия:*\n"]
+    lines = ["📜 Последние действия:\n"]
     for e in entries:
         user_display = f"@{e['tg_username']}" if e["tg_username"] else f"ID {e['tg_user_id']}"
         detail = f" — {e['detail']}" if e["detail"] else ""
-        lines.append(f"• `{e['created_at']}` {user_display}: {e['action']}{detail}")
+        lines.append(f"• {e['created_at']} {user_display}: {e['action']}{detail}")
 
     text = "\n".join(lines)
     if len(text) > 4000:
-        text = text[:4000] + "\n\n... _(обрезано)_"
+        text = text[:4000] + "\n\n... (обрезано)"
 
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text)
 
 
 # --- Inline keyboard callback handler ---
@@ -1239,17 +1239,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 ]),
             )
             return
-        lines = ["📜 *Последние действия:*\n"]
+        lines = ["📜 Последние действия:\n"]
         for e in entries:
             user_display = f"@{e['tg_username']}" if e["tg_username"] else f"ID {e['tg_user_id']}"
             detail = f" — {e['detail']}" if e["detail"] else ""
-            lines.append(f"• `{e['created_at']}` {user_display}: {e['action']}{detail}")
+            lines.append(f"• {e['created_at']} {user_display}: {e['action']}{detail}")
         text = "\n".join(lines)
         if len(text) > 4000:
-            text = text[:4000] + "\n\n... _(обрезано)_"
+            text = text[:4000] + "\n\n... (обрезано)"
         await query.edit_message_text(
             text,
-            parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Обновить", callback_data="menu_log"),
                  InlineKeyboardButton("🔙 Меню", callback_data="menu_back")]
@@ -1484,6 +1483,49 @@ async def _transcribe_voice(file_bytes: bytes) -> str | None:
     return await asyncio.to_thread(_recognize, file_bytes)
 
 
+VOICE_COMMANDS = {
+    # (keywords in recognized text) → (command_func, needs_args, description)
+    "новая сессия": ("newsession", True, "📝 Создаю сессию..."),
+    "создай сессию": ("newsession", True, "📝 Создаю сессию..."),
+    "new session": ("newsession", True, "📝 Creating session..."),
+    "сессии": ("sessions", False, "📋 Список сессий..."),
+    "список сессий": ("sessions", False, "📋 Список сессий..."),
+    "статус": ("status", False, "📊 Проверяю статус..."),
+    "текущая": ("session", False, "📌 Текущая сессия..."),
+    "ключи": ("keys", False, "🔑 Список ключей..."),
+    "расход": ("cost", False, "💰 Расход..."),
+    "лог": ("log", False, "📜 Лог действий..."),
+    "меню": ("menu", False, "📋 Меню..."),
+    "пользователи": ("users", False, "👥 Вайтлист..."),
+    "помощь": ("help", False, "❓ Помощь..."),
+}
+
+VOICE_CMD_MAP = {
+    "newsession": cmd_newsession,
+    "sessions": cmd_sessions,
+    "status": cmd_status,
+    "session": cmd_session,
+    "keys": cmd_keys,
+    "cost": cmd_cost,
+    "log": cmd_log,
+    "menu": cmd_menu,
+    "users": cmd_users,
+    "help": cmd_start,
+}
+
+
+def _match_voice_command(text: str) -> tuple[str | None, str]:
+    """Match recognized text to a bot command. Returns (cmd_name, remaining_text)."""
+    lower = text.lower()
+    for keyword, (cmd_name, needs_args, _) in VOICE_COMMANDS.items():
+        if keyword in lower:
+            # Extract remaining text after keyword for commands that need args
+            idx = lower.index(keyword) + len(keyword)
+            remaining = text[idx:].strip().strip(".,!?")
+            return cmd_name, remaining
+    return None, text
+
+
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _check_whitelist(update):
         return
@@ -1502,36 +1544,54 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
 
         engine = "Whisper" if OPENAI_API_KEY else "Google"
-        await msg.edit_text(
-            f"🎙 Распознано ({engine}):\n\n_{text}_",
-            parse_mode="Markdown",
-        )
-
-        # Check if user has an active session
         user = update.effective_user
-        session = await db.get_active_session(user.id)
 
-        if session:
-            await update.message.reply_text(
-                f"📌 Активная сессия: _{session['title'] or 'Без названия'}_\n\n"
-                f"Что сделать с текстом?",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton(
-                        "📝 Новая сессия",
-                        callback_data=f"voice_new:{text[:200]}",
-                    )],
-                    [InlineKeyboardButton(
-                        "💬 Отправить в текущую",
-                        callback_data=f"voice_send:{text[:200]}",
-                    )],
-                ]),
-            )
+        # Try to match a voice command
+        cmd_name, remaining = _match_voice_command(text)
+
+        if cmd_name:
+            description = ""
+            for kw, (cn, _, desc) in VOICE_COMMANDS.items():
+                if cn == cmd_name:
+                    description = desc
+                    break
+
+            await msg.edit_text(f"🎙 «{text}»\n\n{description}")
+
+            handler_func = VOICE_CMD_MAP.get(cmd_name)
+            if handler_func:
+                if cmd_name == "newsession" and remaining:
+                    context.args = remaining.split()
+                elif cmd_name == "newsession" and not remaining:
+                    # Use whole text as prompt minus the keyword
+                    context.args = text.split()
+                else:
+                    context.args = []
+                await handler_func(update, context)
         else:
-            context.args = text.split()
-            await cmd_newsession(update, context)
+            # No command matched — send to active session or offer to create one
+            await msg.edit_text(f"🎙 «{text}» ({engine})")
 
-        await db.log_activity(user.id, "voice_command", text[:80], user.username)
+            session = await db.get_active_session(user.id)
+            if session:
+                await update.message.reply_text(
+                    f"Что сделать с текстом?",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton(
+                            "📝 Новая сессия",
+                            callback_data=f"voice_new:{text[:200]}",
+                        )],
+                        [InlineKeyboardButton(
+                            "💬 Отправить в текущую",
+                            callback_data=f"voice_send:{text[:200]}",
+                        )],
+                    ]),
+                )
+            else:
+                context.args = text.split()
+                await cmd_newsession(update, context)
+
+        await db.log_activity(user.id, "voice_command", f"[{cmd_name or 'text'}] {text[:60]}", user.username)
 
     except Exception as e:
         logger.error("Voice transcription error: %s", e, exc_info=True)
