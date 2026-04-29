@@ -85,6 +85,7 @@ STATUS_LABELS = {
     "stopped": "⏹ Остановлена",
     "finished": "✅ Завершена",
     "error": "❌ Ошибка",
+    "deleted": "🗑 Удалена",
 }
 
 
@@ -291,6 +292,20 @@ async def _poll_sessions(context: ContextTypes.DEFAULT_TYPE) -> None:
     for sess in sessions:
         try:
             info = await devin_api.get_session(sess["devin_session_id"])
+        except devin_api.DevinAPIError as e:
+            if e.status_code == 404:
+                logger.info(
+                    "Session %s not found (404), stopping polling",
+                    sess["devin_session_id"],
+                )
+                await db.stop_polling_session(sess["id"])
+                await db.update_session_status(sess["id"], "deleted")
+            else:
+                logger.warning(
+                    "Poll error for session %s: %s",
+                    sess["devin_session_id"], e,
+                )
+            continue
         except Exception as e:
             logger.warning("Poll error for session %s: %s", sess["devin_session_id"], e)
             continue
@@ -1401,6 +1416,20 @@ async def post_shutdown(application: Application) -> None:
     logger.info("Database closed")
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Global error handler — log errors and notify user if possible."""
+    logger.error("Unhandled exception:", exc_info=context.error)
+
+    if isinstance(update, Update) and update.effective_chat:
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="⚠️ Произошла внутренняя ошибка. Попробуйте ещё раз.",
+            )
+        except Exception:
+            pass
+
+
 def main() -> None:
     app = (
         Application.builder()
@@ -1409,6 +1438,9 @@ def main() -> None:
         .post_shutdown(post_shutdown)
         .build()
     )
+
+    # Global error handler
+    app.add_error_handler(error_handler)
 
     # Session commands
     app.add_handler(CommandHandler("start", cmd_start))
