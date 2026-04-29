@@ -1526,14 +1526,21 @@ def _match_voice_command(text: str) -> tuple[str | None, str]:
     return None, text
 
 
+VOICE_DURATION_THRESHOLD = 5  # seconds: ≤5s = command mode, >5s = chat mode
+
+
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _check_whitelist(update):
         return
 
-    msg = await update.message.reply_text("🎙 Распознаю речь...")
+    voice = update.message.voice
+    duration = voice.duration or 0
+    is_command_mode = duration <= VOICE_DURATION_THRESHOLD
+
+    mode_label = "🎛 Команда" if is_command_mode else "💬 Чат с Devin"
+    msg = await update.message.reply_text(f"🎙 Распознаю речь... ({mode_label})")
 
     try:
-        voice = update.message.voice
         file_obj = await voice.get_file()
         voice_bytes = await file_obj.download_as_bytearray()
 
@@ -1546,52 +1553,75 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         engine = "Whisper" if OPENAI_API_KEY else "Google"
         user = update.effective_user
 
-        # Try to match a voice command
-        cmd_name, remaining = _match_voice_command(text)
+        if is_command_mode:
+            # --- COMMAND MODE: short voice → match bot commands ---
+            cmd_name, remaining = _match_voice_command(text)
 
-        if cmd_name:
-            description = ""
-            for kw, (cn, _, desc) in VOICE_COMMANDS.items():
-                if cn == cmd_name:
-                    description = desc
-                    break
+            if cmd_name:
+                description = ""
+                for kw, (cn, _, desc) in VOICE_COMMANDS.items():
+                    if cn == cmd_name:
+                        description = desc
+                        break
 
-            await msg.edit_text(f"🎙 «{text}»\n\n{description}")
+                await msg.edit_text(f"🎛 «{text}»\n\n{description}")
 
-            handler_func = VOICE_CMD_MAP.get(cmd_name)
-            if handler_func:
-                if cmd_name == "newsession" and remaining:
-                    context.args = remaining.split()
-                elif cmd_name == "newsession" and not remaining:
-                    # Use whole text as prompt minus the keyword
-                    context.args = text.split()
-                else:
-                    context.args = []
-                await handler_func(update, context)
-        else:
-            # No command matched — send to active session or offer to create one
-            await msg.edit_text(f"🎙 «{text}» ({engine})")
-
-            session = await db.get_active_session(user.id)
-            if session:
+                handler_func = VOICE_CMD_MAP.get(cmd_name)
+                if handler_func:
+                    if cmd_name == "newsession" and remaining:
+                        context.args = remaining.split()
+                    elif cmd_name == "newsession" and not remaining:
+                        context.args = text.split()
+                    else:
+                        context.args = []
+                    await handler_func(update, context)
+            else:
+                # Short but no command matched — ask what to do
+                await msg.edit_text(f"🎛 «{text}»\n\nКоманда не распознана.")
                 await update.message.reply_text(
-                    f"Что сделать с текстом?",
+                    "Что сделать?",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton(
                             "📝 Новая сессия",
                             callback_data=f"voice_new:{text[:200]}",
                         )],
                         [InlineKeyboardButton(
-                            "💬 Отправить в текущую",
+                            "💬 Отправить в сессию",
                             callback_data=f"voice_send:{text[:200]}",
                         )],
                     ]),
                 )
-            else:
-                context.args = text.split()
-                await cmd_newsession(update, context)
 
-        await db.log_activity(user.id, "voice_command", f"[{cmd_name or 'text'}] {text[:60]}", user.username)
+            await db.log_activity(user.id, "voice_command", f"[{cmd_name or '?'}] {text[:60]}", user.username)
+
+        else:
+            # --- CHAT MODE: long voice → send to active Devin session ---
+            session = await db.get_active_session(user.id)
+
+            if not session:
+                await msg.edit_text(
+                    f"💬 «{text}»\n\n"
+                    f"❌ Нет активной сессии. Создайте сначала: /newsession"
+                )
+                return
+
+            await msg.edit_text(f"💬 «{text}»\n\n⏳ Отправляю в Devin...")
+
+            try:
+                await devin_api.send_message(session["devin_session_id"], text)
+                key_id, _ = await devin_api._get_current_key()
+                await db.record_usage(key_id, user.id, "send_message", session["devin_session_id"])
+
+                await msg.edit_text(
+                    f"💬 «{text}»\n\n"
+                    f"✅ Отправлено в сессию.\n"
+                    f"🔗 {session['devin_url']}",
+                    disable_web_page_preview=True,
+                )
+            except devin_api.DevinAPIError as e:
+                await msg.edit_text(f"💬 «{text}»\n\n❌ Ошибка: {e.detail}")
+
+            await db.log_activity(user.id, "voice_chat", text[:60], user.username)
 
     except Exception as e:
         logger.error("Voice transcription error: %s", e, exc_info=True)
