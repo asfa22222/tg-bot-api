@@ -1202,24 +1202,42 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # Get the file object from the message
     file_obj = None
     filename = "file"
+    file_size = 0
     caption = update.message.caption or ""
 
-    if update.message.photo:
-        # Photos come as a list of sizes, take the largest
-        file_obj = await update.message.photo[-1].get_file()
-        filename = f"photo_{file_obj.file_unique_id}.jpg"
-    elif update.message.document:
-        file_obj = await update.message.document.get_file()
-        filename = update.message.document.file_name or f"doc_{file_obj.file_unique_id}"
-    elif update.message.video:
-        file_obj = await update.message.video.get_file()
-        filename = update.message.video.file_name or f"video_{file_obj.file_unique_id}.mp4"
-    elif update.message.audio:
-        file_obj = await update.message.audio.get_file()
-        filename = update.message.audio.file_name or f"audio_{file_obj.file_unique_id}"
-    elif update.message.voice:
-        file_obj = await update.message.voice.get_file()
-        filename = f"voice_{file_obj.file_unique_id}.ogg"
+    try:
+        if update.message.photo:
+            photo = update.message.photo[-1]
+            file_size = photo.file_size or 0
+            file_obj = await photo.get_file()
+            filename = f"photo_{file_obj.file_unique_id}.jpg"
+        elif update.message.document:
+            file_size = update.message.document.file_size or 0
+            file_obj = await update.message.document.get_file()
+            filename = update.message.document.file_name or f"doc_{file_obj.file_unique_id}"
+        elif update.message.video:
+            file_size = update.message.video.file_size or 0
+            file_obj = await update.message.video.get_file()
+            filename = update.message.video.file_name or f"video_{file_obj.file_unique_id}.mp4"
+        elif update.message.audio:
+            file_size = update.message.audio.file_size or 0
+            file_obj = await update.message.audio.get_file()
+            filename = update.message.audio.file_name or f"audio_{file_obj.file_unique_id}"
+        elif update.message.voice:
+            file_size = update.message.voice.file_size or 0
+            file_obj = await update.message.voice.get_file()
+            filename = f"voice_{file_obj.file_unique_id}.ogg"
+    except Exception as e:
+        size_mb = file_size / (1024 * 1024) if file_size else 0
+        if "too big" in str(e).lower() or "file is too big" in str(e).lower():
+            await update.message.reply_text(
+                f"❌ Файл слишком большой ({size_mb:.1f} МБ).\n\n"
+                f"Telegram Bot API ограничивает скачивание файлов до 20 МБ.\n"
+                f"Отправьте файл меньшего размера или загрузите его напрямую в Devin через веб-интерфейс."
+            )
+        else:
+            await update.message.reply_text(f"❌ Ошибка получения файла: {e}")
+        return
 
     if file_obj is None:
         await update.message.reply_text("❌ Не удалось получить файл.")
