@@ -424,21 +424,23 @@ async def cmd_webapp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not await _check_whitelist(update):
         return
 
-    if not WEBAPP_URL:
+    # Read directly from env for diagnostic
+    url = os.environ.get("WEBAPP_URL", "") or WEBAPP_URL
+    if not url:
         await update.message.reply_text(
             "❌ Mini App не настроен.\n\n"
-            "Установите переменную окружения `WEBAPP_URL` "
-            "(например `https://tg-bot-api-production.up.railway.app`)",
-            parse_mode="Markdown",
+            f"Config WEBAPP_URL: '{WEBAPP_URL}'\n"
+            f"Env WEBAPP_URL: '{os.environ.get('WEBAPP_URL', '')}'\n\n"
+            "Установите переменную окружения `WEBAPP_URL`",
         )
         return
 
     await update.message.reply_text(
-        "📱 Нажми кнопку ниже чтобы открыть Mini App:",
+        f"📱 Mini App ({url}):",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton(
                 "📱 Открыть Mini App",
-                web_app=WebAppInfo(url=WEBAPP_URL),
+                web_app=WebAppInfo(url=url),
             )]
         ]),
     )
