@@ -96,6 +96,16 @@ def _format_status(status: str) -> str:
     return STATUS_LABELS.get(status, f"❓ {status}")
 
 
+def _get_webapp_url() -> str:
+    """Get Mini App URL from env (supports RAILWAY_PUBLIC_DOMAIN fallback)."""
+    url = os.environ.get("WEBAPP_URL", "")
+    if not url:
+        domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+        if domain:
+            url = f"https://{domain}"
+    return url
+
+
 def _reply_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     """Persistent bottom keyboard with main actions."""
     buttons = [
@@ -107,9 +117,10 @@ def _reply_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
         buttons.append(
             [KeyboardButton("🔑 Ключи"), KeyboardButton("📜 Лог")]
         )
-    if WEBAPP_URL:
+    webapp_url = _get_webapp_url()
+    if webapp_url:
         buttons.append(
-            [KeyboardButton("📱 Mini App", web_app=WebAppInfo(url=WEBAPP_URL))]
+            [KeyboardButton("📱 Mini App", web_app=WebAppInfo(url=webapp_url))]
         )
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
@@ -139,10 +150,11 @@ def _main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
         InlineKeyboardButton("🆔 Мой ID", callback_data="menu_myid"),
         InlineKeyboardButton("❓ Помощь", callback_data="menu_help"),
     ])
-    if WEBAPP_URL:
+    webapp_url = _get_webapp_url()
+    if webapp_url:
         buttons.append([
             InlineKeyboardButton(
-                "📱 Mini App", web_app=WebAppInfo(url=WEBAPP_URL)
+                "📱 Mini App", web_app=WebAppInfo(url=webapp_url)
             ),
         ])
     return InlineKeyboardMarkup(buttons)
@@ -424,15 +436,7 @@ async def cmd_webapp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not await _check_whitelist(update):
         return
 
-    # Try multiple sources for webapp URL
-    url = os.environ.get("WEBAPP_URL", "")
-    if not url:
-        # Railway auto-generates RAILWAY_PUBLIC_DOMAIN
-        domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
-        if domain:
-            url = f"https://{domain}"
-    if not url:
-        url = WEBAPP_URL
+    url = _get_webapp_url()
 
     if not url:
         # Diagnostic: show all RAILWAY_* and WEBAPP_* env vars
