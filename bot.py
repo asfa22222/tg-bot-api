@@ -364,13 +364,31 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     is_user_admin = await db.is_admin(user.id)
     reply_kb = _reply_keyboard(is_user_admin)
 
+    # Send reply keyboard first
     await update.message.reply_text(
         "🤖 *Devin Telegram Bot*\n\n"
-        "Управление сессиями Devin AI прямо из Telegram.\n"
-        "Используйте кнопки внизу экрана!",
+        "Управление сессиями Devin AI прямо из Telegram.\n\n"
+        "⬇️ Кнопки внизу — основные действия\n"
+        "📋 /menu — подробное меню\n"
+        "/ — нажми для списка всех команд",
         parse_mode="Markdown",
         reply_markup=reply_kb,
     )
+
+    # Check if user has API keys set up
+    keys = await db.list_api_keys()
+    if not keys and is_user_admin:
+        await update.message.reply_text(
+            "⚠️ *Нет API ключей!*\n\n"
+            "Добавьте ключ Devin для начала работы:\n"
+            "`/addkey <ваш_api_ключ> Название`\n\n"
+            "Ключ можно получить на: https://app.devin.ai → Settings → API Keys",
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔑 Как добавить ключ", callback_data="menu_help")]
+            ]),
+        )
 
 
 async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -425,10 +443,16 @@ async def cmd_newsession(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"✅ *Сессия создана!*\n\n"
         f"🔗 {session_url}\n"
         f"📝 {prompt[:100]}\n\n"
-        f"Теперь можете отправлять сообщения и файлы — они пойдут в эту сессию.\n"
-        f"Бот уведомит вас об изменениях статуса.",
+        f"Отправляйте сообщения и файлы — они пойдут в эту сессию.",
         parse_mode="Markdown",
         disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📊 Статус", callback_data="menu_status"),
+                InlineKeyboardButton("📋 Сессии", callback_data="menu_sessions"),
+            ],
+            [InlineKeyboardButton("🔗 Открыть в Devin", url=session_url)],
+        ]),
     )
 
 
@@ -1336,6 +1360,31 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def post_init(application: Application) -> None:
     await db.get_db()
     logger.info("Database initialized")
+
+    # Register bot commands menu (shows on "/" in chat)
+    from telegram import BotCommand, BotCommandScopeAllPrivateChats
+    commands = [
+        BotCommand("menu", "📋 Главное меню"),
+        BotCommand("newsession", "📝 Новая сессия"),
+        BotCommand("sessions", "📋 Все сессии"),
+        BotCommand("session", "📌 Текущая сессия"),
+        BotCommand("status", "📊 Статус сессии"),
+        BotCommand("switch", "🔄 Переключить сессию"),
+        BotCommand("delsession", "🗑 Удалить сессию"),
+        BotCommand("cost", "💰 Расход по ключам"),
+        BotCommand("addkey", "🔑 Добавить API ключ"),
+        BotCommand("keys", "🔑 Список ключей"),
+        BotCommand("adduser", "👤 Добавить пользователя"),
+        BotCommand("users", "👥 Вайтлист"),
+        BotCommand("broadcast", "📢 Рассылка всем"),
+        BotCommand("log", "📜 Лог действий"),
+        BotCommand("myid", "🆔 Мой Telegram ID"),
+    ]
+    try:
+        await application.bot.set_my_commands(commands)
+        logger.info("Bot commands menu registered (%d commands)", len(commands))
+    except Exception as e:
+        logger.warning("Failed to set bot commands: %s", e)
 
     # Start background polling job
     application.job_queue.run_repeating(
