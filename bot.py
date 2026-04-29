@@ -1424,7 +1424,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         await devin_api.send_message(session["devin_session_id"], text)
     except devin_api.DevinAPIError as e:
-        await update.message.reply_text(f"❌ Ошибка: {e.detail}")
+        if e.status_code == 404 or "not found" in (e.detail or "").lower():
+            await db.stop_polling_session(session["id"])
+            await db.update_session_status(session["id"], "deleted")
+            await update.message.reply_text(
+                "❌ Сессия больше не существует на Devin.\n"
+                "Создайте новую: /newsession <задача>"
+            )
+        else:
+            await update.message.reply_text(f"❌ Ошибка: {e.detail}")
         return
 
     user = update.effective_user
@@ -1619,7 +1627,16 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     disable_web_page_preview=True,
                 )
             except devin_api.DevinAPIError as e:
-                await msg.edit_text(f"💬 «{text}»\n\n❌ Ошибка: {e.detail}")
+                if e.status_code == 404 or "not found" in (e.detail or "").lower():
+                    await db.stop_polling_session(session["id"])
+                    await db.update_session_status(session["id"], "deleted")
+                    await msg.edit_text(
+                        f"💬 «{text}»\n\n"
+                        f"❌ Сессия больше не существует на Devin.\n"
+                        f"Создайте новую: /newsession <задача>"
+                    )
+                else:
+                    await msg.edit_text(f"💬 «{text}»\n\n❌ Ошибка: {e.detail}")
 
             await db.log_activity(user.id, "voice_chat", text[:60], user.username)
 
