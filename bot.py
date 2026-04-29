@@ -13,6 +13,7 @@ from telegram import (
     KeyboardButton,
     ReplyKeyboardMarkup,
     Update,
+    WebAppInfo,
 )
 from telegram.ext import (
     Application,
@@ -27,7 +28,7 @@ import httpx
 
 import database as db
 import devin_api
-from config import OPENAI_API_KEY, TELEGRAM_BOT_TOKEN
+from config import OPENAI_API_KEY, TELEGRAM_BOT_TOKEN, WEBAPP_URL
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -106,6 +107,10 @@ def _reply_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
         buttons.append(
             [KeyboardButton("🔑 Ключи"), KeyboardButton("📜 Лог")]
         )
+    if WEBAPP_URL:
+        buttons.append(
+            [KeyboardButton("📱 Mini App", web_app=WebAppInfo(url=WEBAPP_URL))]
+        )
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 
@@ -134,6 +139,12 @@ def _main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
         InlineKeyboardButton("🆔 Мой ID", callback_data="menu_myid"),
         InlineKeyboardButton("❓ Помощь", callback_data="menu_help"),
     ])
+    if WEBAPP_URL:
+        buttons.append([
+            InlineKeyboardButton(
+                "📱 Mini App", web_app=WebAppInfo(url=WEBAPP_URL)
+            ),
+        ])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -1783,6 +1794,13 @@ async def post_init(application: Application) -> None:
     await db.get_db()
     logger.info("Database initialized")
 
+    # Start Mini App web server
+    from web_server import start_web_server
+    try:
+        application.bot_data["web_runner"] = await start_web_server()
+    except Exception as e:
+        logger.warning("Failed to start web server: %s", e)
+
     # Register bot commands menu (shows on "/" in chat)
     from telegram import BotCommand, BotCommandScopeAllPrivateChats
     commands = [
@@ -1820,6 +1838,10 @@ async def post_init(application: Application) -> None:
 
 
 async def post_shutdown(application: Application) -> None:
+    runner = application.bot_data.get("web_runner")
+    if runner:
+        await runner.cleanup()
+        logger.info("Web server stopped")
     await db.close_db()
     logger.info("Database closed")
 
@@ -1836,6 +1858,37 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
             )
         except Exception:
             pass
+
+
+WEBAPP_CMD_MAP = {
+    "newsession": cmd_newsession,
+    "sessions": cmd_sessions,
+    "status": cmd_status,
+    "cost": cmd_cost,
+    "keys": cmd_keys,
+    "log": cmd_log,
+    "menu": cmd_menu,
+    "exportkeys": cmd_exportkeys,
+}
+
+
+async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle data sent from Telegram Mini App."""
+    if not await _check_whitelist(update):
+        return
+
+    try:
+        data = json.loads(update.effective_message.web_app_data.data)
+        cmd = data.get("command", "")
+        handler_func = WEBAPP_CMD_MAP.get(cmd)
+        if handler_func:
+            context.args = []
+            await handler_func(update, context)
+        else:
+            await update.message.reply_text(f"Неизвестная команда: {cmd}")
+    except Exception as e:
+        logger.error("WebApp data error: %s", e)
+        await update.message.reply_text(f"❌ Ошибка: {e}")
 
 
 def main() -> None:
@@ -1892,6 +1945,9 @@ def main() -> None:
             handle_file,
         )
     )
+
+    # WebApp data handler (Mini App actions)
+    app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
 
     # Text messages → active session
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Devin Bot</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --bg: var(--tg-theme-bg-color, #ffffff);
+            --text: var(--tg-theme-text-color, #000000);
+            --hint: var(--tg-theme-hint-color, #999999);
+            --link: var(--tg-theme-link-color, #2678b6);
+            --btn: var(--tg-theme-button-color, #2678b6);
+            --btn-text: var(--tg-theme-button-text-color, #ffffff);
+            --secondary-bg: var(--tg-theme-secondary-bg-color, #f0f0f0);
+            --section-bg: var(--tg-theme-section-bg-color, var(--bg));
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            padding-bottom: 80px;
+        }
+
+        .header {
+            background: var(--btn);
+            color: var(--btn-text);
+            padding: 20px 16px 16px;
+            text-align: center;
+        }
+        .header h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+        .header .subtitle { font-size: 13px; opacity: 0.8; }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            padding: 12px 16px;
+        }
+        .stat-card {
+            background: var(--secondary-bg);
+            border-radius: 12px;
+            padding: 12px 8px;
+            text-align: center;
+        }
+        .stat-card .number {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--btn);
+        }
+        .stat-card .label {
+            font-size: 11px;
+            color: var(--hint);
+            margin-top: 2px;
+        }
+
+        .section {
+            margin-top: 8px;
+            background: var(--section-bg);
+        }
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px 8px;
+        }
+        .section-header h2 {
+            font-size: 15px;
+            font-weight: 600;
+        }
+        .section-header .badge {
+            background: var(--btn);
+            color: var(--btn-text);
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 10px;
+        }
+
+        .session-list { padding: 0 16px 8px; }
+        .session-item {
+            background: var(--secondary-bg);
+            border-radius: 12px;
+            padding: 12px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: transform 0.1s;
+        }
+        .session-item:active { transform: scale(0.98); }
+        .session-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+        }
+        .session-title {
+            font-size: 14px;
+            font-weight: 500;
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            margin-right: 8px;
+        }
+        .status-badge {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            white-space: nowrap;
+        }
+        .status-running { background: #e8f5e9; color: #2e7d32; }
+        .status-finished { background: #e3f2fd; color: #1565c0; }
+        .status-error { background: #fce4ec; color: #c62828; }
+        .status-stopped { background: #fff3e0; color: #ef6c00; }
+        .status-suspended { background: #fff8e1; color: #f9a825; }
+        .status-deleted { background: #f5f5f5; color: #9e9e9e; }
+
+        .session-meta {
+            font-size: 12px;
+            color: var(--hint);
+        }
+
+        .actions-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+            padding: 0 16px 12px;
+        }
+        .action-btn {
+            background: var(--secondary-bg);
+            border: none;
+            border-radius: 12px;
+            padding: 14px 12px;
+            font-size: 14px;
+            color: var(--text);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: transform 0.1s;
+        }
+        .action-btn:active { transform: scale(0.96); }
+        .action-btn .icon { font-size: 20px; }
+
+        .log-list { padding: 0 16px 12px; }
+        .log-item {
+            padding: 8px 0;
+            border-bottom: 1px solid var(--secondary-bg);
+            font-size: 13px;
+        }
+        .log-item:last-child { border-bottom: none; }
+        .log-action { font-weight: 500; }
+        .log-time { color: var(--hint); font-size: 11px; }
+
+        .empty {
+            text-align: center;
+            color: var(--hint);
+            padding: 24px 16px;
+            font-size: 14px;
+        }
+
+        .loading {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 40px;
+        }
+        .spinner {
+            width: 32px;
+            height: 32px;
+            border: 3px solid var(--secondary-bg);
+            border-top-color: var(--btn);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .tabs {
+            display: flex;
+            padding: 8px 16px;
+            gap: 8px;
+        }
+        .tab {
+            flex: 1;
+            padding: 8px;
+            border: none;
+            border-radius: 10px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            background: var(--secondary-bg);
+            color: var(--hint);
+            transition: all 0.2s;
+        }
+        .tab.active {
+            background: var(--btn);
+            color: var(--btn-text);
+        }
+
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        .key-item {
+            background: var(--secondary-bg);
+            border-radius: 12px;
+            padding: 12px;
+            margin: 0 16px 8px;
+        }
+        .key-label { font-size: 14px; font-weight: 500; }
+        .key-value { font-size: 12px; color: var(--hint); font-family: monospace; margin-top: 4px; }
+        .key-stats { font-size: 12px; color: var(--hint); margin-top: 4px; }
+        .key-active { color: #2e7d32; }
+        .key-inactive { color: #c62828; }
+
+        .refresh-btn {
+            position: fixed;
+            bottom: 16px;
+            right: 16px;
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: var(--btn);
+            color: var(--btn-text);
+            border: none;
+            font-size: 20px;
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .refresh-btn:active { transform: scale(0.9); }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1>🤖 Devin Bot</h1>
+    <div class="subtitle" id="userInfo">Загрузка...</div>
+</div>
+
+<div class="stats-grid" id="statsGrid">
+    <div class="stat-card">
+        <div class="number" id="statSessions">-</div>
+        <div class="label">Сессии</div>
+    </div>
+    <div class="stat-card">
+        <div class="number" id="statActive">-</div>
+        <div class="label">Активные</div>
+    </div>
+    <div class="stat-card">
+        <div class="number" id="statMessages">-</div>
+        <div class="label">Сообщения</div>
+    </div>
+</div>
+
+<div class="tabs">
+    <button class="tab active" data-tab="sessions">📋 Сессии</button>
+    <button class="tab" data-tab="actions">⚡ Действия</button>
+    <button class="tab" data-tab="keys">🔑 Ключи</button>
+    <button class="tab" data-tab="log">📜 Лог</button>
+</div>
+
+<!-- Sessions Tab -->
+<div class="tab-content active" id="tab-sessions">
+    <div class="loading" id="sessionsLoading"><div class="spinner"></div></div>
+    <div class="session-list" id="sessionsList"></div>
+</div>
+
+<!-- Actions Tab -->
+<div class="tab-content" id="tab-actions">
+    <div style="padding-top: 4px;"></div>
+    <div class="actions-grid">
+        <button class="action-btn" onclick="doAction('newsession')">
+            <span class="icon">📝</span> Новая сессия
+        </button>
+        <button class="action-btn" onclick="doAction('status')">
+            <span class="icon">📊</span> Статус
+        </button>
+        <button class="action-btn" onclick="doAction('sessions')">
+            <span class="icon">📋</span> Все сессии
+        </button>
+        <button class="action-btn" onclick="doAction('cost')">
+            <span class="icon">💰</span> Расход
+        </button>
+        <button class="action-btn" onclick="doAction('keys')">
+            <span class="icon">🔑</span> Ключи
+        </button>
+        <button class="action-btn" onclick="doAction('log')">
+            <span class="icon">📜</span> Лог
+        </button>
+        <button class="action-btn" onclick="doAction('menu')">
+            <span class="icon">📋</span> Меню
+        </button>
+        <button class="action-btn" onclick="doAction('exportkeys')">
+            <span class="icon">📤</span> Экспорт ключей
+        </button>
+    </div>
+</div>
+
+<!-- Keys Tab -->
+<div class="tab-content" id="tab-keys">
+    <div class="loading" id="keysLoading"><div class="spinner"></div></div>
+    <div id="keysList" style="padding-top: 8px;"></div>
+</div>
+
+<!-- Log Tab -->
+<div class="tab-content" id="tab-log">
+    <div class="loading" id="logLoading"><div class="spinner"></div></div>
+    <div class="log-list" id="logList"></div>
+</div>
+
+<button class="refresh-btn" onclick="loadAll()">🔄</button>
+
+<script>
+const tg = window.Telegram.WebApp;
+tg.ready();
+tg.expand();
+
+const API_BASE = window.location.origin + '/api';
+const initData = tg.initData || '';
+
+// User info
+const user = tg.initDataUnsafe?.user;
+if (user) {
+    document.getElementById('userInfo').textContent =
+        `${user.first_name || ''} ${user.last_name || ''} (@${user.username || 'n/a'})`;
+} else {
+    document.getElementById('userInfo').textContent = 'Devin Session Manager';
+}
+
+// Tab switching
+document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+    });
+});
+
+async function api(endpoint) {
+    try {
+        const resp = await fetch(`${API_BASE}${endpoint}`, {
+            headers: { 'X-Telegram-Init-Data': initData }
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return await resp.json();
+    } catch(e) {
+        console.error('API error:', e);
+        return null;
+    }
+}
+
+function statusClass(status) {
+    const map = {
+        'running': 'status-running',
+        'finished': 'status-finished',
+        'error': 'status-error',
+        'stopped': 'status-stopped',
+        'suspended': 'status-suspended',
+        'deleted': 'status-deleted',
+    };
+    return map[status] || 'status-stopped';
+}
+
+function statusLabel(status) {
+    const map = {
+        'running': '🟢 Работает',
+        'finished': '✅ Завершена',
+        'error': '❌ Ошибка',
+        'stopped': '⏹ Стоп',
+        'suspended': '⏸ Ожидает',
+        'deleted': '🗑 Удалена',
+    };
+    return map[status] || status || 'Неизвестно';
+}
+
+function timeAgo(dateStr) {
+    if (!dateStr) return '';
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diff = Math.floor((now - date) / 1000);
+    if (diff < 60) return 'только что';
+    if (diff < 3600) return `${Math.floor(diff/60)} мин назад`;
+    if (diff < 86400) return `${Math.floor(diff/3600)} ч назад`;
+    return `${Math.floor(diff/86400)} дн назад`;
+}
+
+async function loadSessions() {
+    document.getElementById('sessionsLoading').style.display = 'flex';
+    const data = await api('/sessions');
+    document.getElementById('sessionsLoading').style.display = 'none';
+
+    const list = document.getElementById('sessionsList');
+    if (!data || !data.sessions || data.sessions.length === 0) {
+        list.innerHTML = '<div class="empty">Нет сессий. Создайте первую!</div>';
+        return;
+    }
+
+    list.innerHTML = data.sessions.map(s => `
+        <div class="session-item" onclick="openSession('${s.devin_url || ''}')">
+            <div class="session-top">
+                <div class="session-title">${s.title || 'Без названия'}</div>
+                <span class="status-badge ${statusClass(s.status)}">${statusLabel(s.status)}</span>
+            </div>
+            <div class="session-meta">ID ${s.id} • ${timeAgo(s.created_at)}</div>
+        </div>
+    `).join('');
+}
+
+async function loadStats() {
+    const data = await api('/stats');
+    if (!data) return;
+    document.getElementById('statSessions').textContent = data.total_sessions || 0;
+    document.getElementById('statActive').textContent = data.active_sessions || 0;
+    document.getElementById('statMessages').textContent = data.total_messages || 0;
+}
+
+async function loadKeys() {
+    document.getElementById('keysLoading').style.display = 'flex';
+    const data = await api('/keys');
+    document.getElementById('keysLoading').style.display = 'none';
+
+    const list = document.getElementById('keysList');
+    if (!data || !data.keys || data.keys.length === 0) {
+        list.innerHTML = '<div class="empty">Нет API ключей</div>';
+        return;
+    }
+
+    list.innerHTML = data.keys.map(k => `
+        <div class="key-item">
+            <div class="key-label">
+                <span class="${k.is_active ? 'key-active' : 'key-inactive'}">
+                    ${k.is_active ? '✅' : '❌'}
+                </span>
+                ${k.label || 'Без названия'}
+            </div>
+            <div class="key-value">${k.masked_key}</div>
+            <div class="key-stats">Добавлен: ${k.added_at || '—'}</div>
+        </div>
+    `).join('');
+}
+
+async function loadLog() {
+    document.getElementById('logLoading').style.display = 'flex';
+    const data = await api('/log');
+    document.getElementById('logLoading').style.display = 'none';
+
+    const list = document.getElementById('logList');
+    if (!data || !data.entries || data.entries.length === 0) {
+        list.innerHTML = '<div class="empty">Лог пуст</div>';
+        return;
+    }
+
+    list.innerHTML = data.entries.map(e => `
+        <div class="log-item">
+            <span class="log-action">${e.action}</span>
+            ${e.detail ? ` — ${e.detail}` : ''}
+            <br><span class="log-time">${e.username || ''} • ${e.created_at || ''}</span>
+        </div>
+    `).join('');
+}
+
+function openSession(url) {
+    if (url) tg.openLink(url);
+}
+
+function doAction(cmd) {
+    tg.sendData(JSON.stringify({ command: cmd }));
+    tg.close();
+}
+
+async function loadAll() {
+    loadStats();
+    loadSessions();
+    loadKeys();
+    loadLog();
+}
+
+loadAll();
+</script>
+</body>
+</html>

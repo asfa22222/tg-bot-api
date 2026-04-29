@@ -10,3 +10,6 @@ DB_PATH = os.environ.get("DB_PATH", "/data/bot_data.db")
 
 # OpenAI Whisper API for voice recognition (optional)
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+
+# Mini App URL (Railway public URL, set automatically or manually)
+WEBAPP_URL = os.environ.get("WEBAPP_URL", "")
