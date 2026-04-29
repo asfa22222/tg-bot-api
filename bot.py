@@ -683,6 +683,41 @@ async def cmd_keys(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+async def cmd_exportkeys(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _check_admin(update):
+        return
+
+    keys = await db.list_api_keys()
+    if not keys:
+        await update.message.reply_text("Нет API ключей для экспорта.")
+        return
+
+    lines = ["Экспорт API ключей Devin Telegram Bot", "=" * 40, ""]
+    for k in keys:
+        status = "Активен" if k["is_active"] else "Отключён"
+        label = k["label"] or "Без названия"
+        lines.append(f"ID: {k['id']}")
+        lines.append(f"Название: {label}")
+        lines.append(f"Статус: {status}")
+        lines.append(f"Ключ: {k['key']}")
+        lines.append(f"Добавлен: {k['added_at']}")
+        lines.append("-" * 40)
+        lines.append("")
+
+    content = "\n".join(lines)
+    bio = io.BytesIO(content.encode("utf-8"))
+    bio.name = "devin_api_keys.txt"
+
+    await update.message.reply_document(
+        document=bio,
+        filename="devin_api_keys.txt",
+        caption="🔑 Экспорт всех API ключей. Храните в безопасном месте!",
+    )
+
+    user = update.effective_user
+    await db.log_activity(user.id, "export_keys", f"{len(keys)} keys", user.username)
+
+
 async def cmd_removekey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _check_admin(update):
         return
@@ -1389,6 +1424,7 @@ async def post_init(application: Application) -> None:
         BotCommand("cost", "💰 Расход по ключам"),
         BotCommand("addkey", "🔑 Добавить API ключ"),
         BotCommand("keys", "🔑 Список ключей"),
+        BotCommand("exportkeys", "📤 Экспорт ключей в файл"),
         BotCommand("adduser", "👤 Добавить пользователя"),
         BotCommand("users", "👥 Вайтлист"),
         BotCommand("broadcast", "📢 Рассылка всем"),
@@ -1456,6 +1492,7 @@ def main() -> None:
     # Key management
     app.add_handler(CommandHandler("addkey", cmd_addkey))
     app.add_handler(CommandHandler("keys", cmd_keys))
+    app.add_handler(CommandHandler("exportkeys", cmd_exportkeys))
     app.add_handler(CommandHandler("removekey", cmd_removekey))
     app.add_handler(CommandHandler("switchkey", cmd_switchkey))
 
