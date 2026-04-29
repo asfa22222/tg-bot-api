@@ -23,9 +23,11 @@ from telegram.ext import (
     filters,
 )
 
+import httpx
+
 import database as db
 import devin_api
-from config import TELEGRAM_BOT_TOKEN
+from config import OPENAI_API_KEY, TELEGRAM_BOT_TOKEN
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -1308,6 +1310,59 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             ]),
         )
 
+    elif data.startswith("voice_new:"):
+        prompt = data[len("voice_new:"):]
+        if not prompt:
+            await query.edit_message_text("❌ Пустой текст.")
+            return
+        await query.edit_message_text("⏳ Создаю сессию...")
+        try:
+            key_id, api_key = await devin_api._get_current_key()
+            session_id, session_url = await devin_api.create_session(prompt)
+            await db.create_session(
+                devin_session_id=session_id,
+                devin_url=session_url,
+                title=prompt[:100],
+                tg_user_id=user.id,
+                tg_chat_id=query.message.chat_id,
+            )
+            await db.record_usage(key_id, user.id, "create_session", session_id)
+            await db.log_activity(user.id, "voice_create_session", prompt[:80], user.username)
+            await query.edit_message_text(
+                f"✅ *Сессия создана (голос):*\n\n"
+                f"🔗 {session_url}\n"
+                f"📝 {prompt[:100]}",
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔗 Открыть в Devin", url=session_url)],
+                ]),
+            )
+        except Exception as e:
+            await query.edit_message_text(f"❌ Ошибка: {e}")
+
+    elif data.startswith("voice_send:"):
+        text = data[len("voice_send:"):]
+        if not text:
+            await query.edit_message_text("❌ Пустой текст.")
+            return
+        session = await db.get_active_session(user.id)
+        if not session:
+            await query.edit_message_text("❌ Нет активной сессии.")
+            return
+        await query.edit_message_text("⏳ Отправляю в сессию...")
+        try:
+            await devin_api.send_message(session["devin_session_id"], text)
+            key_id, _ = await devin_api._get_current_key()
+            await db.record_usage(key_id, user.id, "send_message", session["devin_session_id"])
+            await db.log_activity(user.id, "voice_send_message", text[:80], user.username)
+            await query.edit_message_text(
+                f"✅ Голосовое сообщение отправлено в сессию.\n🔗 {session['devin_url']}",
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            await query.edit_message_text(f"❌ Ошибка: {e}")
+
 
 # ---------------------------------------------------------------------------
 # Text message handler (send to active session)
@@ -1382,6 +1437,87 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"📨 Сообщение отправлено в сессию.\n🔗 {session['devin_url']}",
         disable_web_page_preview=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Voice message handler — speech-to-text via OpenAI Whisper
+# ---------------------------------------------------------------------------
+
+async def _transcribe_voice(file_bytes: bytes, filename: str = "voice.ogg") -> str | None:
+    """Transcribe audio using OpenAI Whisper API."""
+    if not OPENAI_API_KEY:
+        return None
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+            files={"file": (filename, file_bytes, "audio/ogg")},
+            data={"model": "whisper-1"},
+        )
+        resp.raise_for_status()
+        return resp.json().get("text", "").strip()
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _check_whitelist(update):
+        return
+
+    if not OPENAI_API_KEY:
+        await update.message.reply_text(
+            "🎙 Голосовые команды не настроены.\n\n"
+            "Админу нужно добавить `OPENAI_API_KEY` в переменные окружения Railway "
+            "для распознавания речи (OpenAI Whisper).",
+            parse_mode="Markdown",
+        )
+        return
+
+    msg = await update.message.reply_text("🎙 Распознаю речь...")
+
+    try:
+        voice = update.message.voice
+        file_obj = await voice.get_file()
+        voice_bytes = await file_obj.download_as_bytearray()
+
+        text = await _transcribe_voice(bytes(voice_bytes))
+
+        if not text:
+            await msg.edit_text("❌ Не удалось распознать речь. Попробуйте ещё раз.")
+            return
+
+        await msg.edit_text(f"🎙 Распознано:\n\n_{text}_", parse_mode="Markdown")
+
+        # Check if user has an active session
+        user = update.effective_user
+        session = await db.get_active_session(user.id)
+
+        if session:
+            # Ask: create new session or send to current?
+            await update.message.reply_text(
+                f"📌 Активная сессия: _{session['title'] or 'Без названия'}_\n\n"
+                f"Что сделать с текстом?",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(
+                        "📝 Новая сессия",
+                        callback_data=f"voice_new:{text[:200]}",
+                    )],
+                    [InlineKeyboardButton(
+                        "💬 Отправить в текущую",
+                        callback_data=f"voice_send:{text[:200]}",
+                    )],
+                ]),
+            )
+        else:
+            # No active session — create one
+            context.args = text.split()
+            await cmd_newsession(update, context)
+
+        await db.log_activity(user.id, "voice_command", text[:80], user.username)
+
+    except Exception as e:
+        logger.error("Voice transcription error: %s", e, exc_info=True)
+        await msg.edit_text(f"❌ Ошибка распознавания: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1597,10 +1733,13 @@ def main() -> None:
     # Inline keyboard callbacks
     app.add_handler(CallbackQueryHandler(handle_callback))
 
+    # Voice message handler (speech-to-text)
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+
     # File/photo/document handlers
     app.add_handler(
         MessageHandler(
-            filters.PHOTO | filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.VOICE,
+            filters.PHOTO | filters.Document.ALL | filters.VIDEO | filters.AUDIO,
             handle_file,
         )
     )
