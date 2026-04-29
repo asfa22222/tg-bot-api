@@ -419,6 +419,31 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
+async def cmd_webapp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Open Mini App directly."""
+    if not await _check_whitelist(update):
+        return
+
+    if not WEBAPP_URL:
+        await update.message.reply_text(
+            "❌ Mini App не настроен.\n\n"
+            "Установите переменную окружения `WEBAPP_URL` "
+            "(например `https://tg-bot-api-production.up.railway.app`)",
+            parse_mode="Markdown",
+        )
+        return
+
+    await update.message.reply_text(
+        "📱 Нажми кнопку ниже чтобы открыть Mini App:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                "📱 Открыть Mini App",
+                web_app=WebAppInfo(url=WEBAPP_URL),
+            )]
+        ]),
+    )
+
+
 async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     await update.message.reply_text(
@@ -1820,6 +1845,7 @@ async def post_init(application: Application) -> None:
         BotCommand("users", "👥 Вайтлист"),
         BotCommand("broadcast", "📢 Рассылка всем"),
         BotCommand("log", "📜 Лог действий"),
+        BotCommand("webapp", "📱 Mini App"),
         BotCommand("myid", "🆔 Мой Telegram ID"),
     ]
     try:
@@ -1907,6 +1933,7 @@ def main() -> None:
     # Session commands
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_start))
+    app.add_handler(CommandHandler("webapp", cmd_webapp))
     app.add_handler(CommandHandler("myid", cmd_myid))
     app.add_handler(CommandHandler("newsession", cmd_newsession))
     app.add_handler(CommandHandler("session", cmd_session))
