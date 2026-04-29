@@ -1318,7 +1318,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         try:
             key_id, api_key = await devin_api._get_current_key()
             session_id, session_url = await devin_api.create_session(prompt)
-            await db.create_session(
+            await db.create_session_record(
                 devin_session_id=session_id,
                 devin_url=session_url,
                 title=prompt[:100],
