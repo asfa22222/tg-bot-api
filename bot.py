@@ -764,6 +764,53 @@ async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _check_admin(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Использование: /broadcast <сообщение>\n"
+            "Пример: /broadcast Бот обновлён! Добавлены новые функции."
+        )
+        return
+
+    text = " ".join(context.args)
+    users = await db.list_whitelist()
+
+    if not users:
+        await update.message.reply_text("Вайтлист пуст — некому отправлять.")
+        return
+
+    msg = await update.message.reply_text(
+        f"📤 Рассылка {len(users)} пользователям..."
+    )
+
+    sent = 0
+    failed = 0
+    for u in users:
+        try:
+            await context.bot.send_message(
+                chat_id=u["tg_id"],
+                text=f"📢 *Рассылка от админа:*\n\n{text}",
+                parse_mode="Markdown",
+            )
+            sent += 1
+        except Exception as e:
+            logger.warning("Broadcast failed for %s: %s", u["tg_id"], e)
+            failed += 1
+
+    user = update.effective_user
+    await db.log_activity(user.id, "broadcast", f"{sent} ok, {failed} fail: {text[:50]}", user.username)
+
+    await msg.edit_text(
+        f"✅ Рассылка завершена!\n\n"
+        f"📨 Отправлено: {sent}\n"
+        f"❌ Не доставлено: {failed}\n"
+        f"👥 Всего: {len(users)}"
+    )
+
+
 # --- Menu, Cost, Log commands ---
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1335,6 +1382,7 @@ def main() -> None:
     app.add_handler(CommandHandler("adduser", cmd_adduser))
     app.add_handler(CommandHandler("removeuser", cmd_removeuser))
     app.add_handler(CommandHandler("users", cmd_users))
+    app.add_handler(CommandHandler("broadcast", cmd_broadcast))
 
     # Menu, cost, log
     app.add_handler(CommandHandler("menu", cmd_menu))
