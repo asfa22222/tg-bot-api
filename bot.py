@@ -1309,10 +1309,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             ]),
         )
 
-    elif data.startswith("voice_new:"):
-        prompt = data[len("voice_new:"):]
+    elif data.startswith("vnew:"):
+        vid = data[len("vnew:"):]
+        prompt = _get_voice_text(vid)
         if not prompt:
-            await query.edit_message_text("❌ Пустой текст.")
+            await query.edit_message_text("❌ Текст истёк. Отправьте голосовое заново.")
             return
         await query.edit_message_text("⏳ Создаю сессию...")
         try:
@@ -1340,10 +1341,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка: {e}")
 
-    elif data.startswith("voice_send:"):
-        text = data[len("voice_send:"):]
+    elif data.startswith("vsend:"):
+        vid = data[len("vsend:"):]
+        text = _get_voice_text(vid)
         if not text:
-            await query.edit_message_text("❌ Пустой текст.")
+            await query.edit_message_text("❌ Текст истёк. Отправьте голосовое заново.")
             return
         session = await db.get_active_session(user.id)
         if not session:
@@ -1491,6 +1493,27 @@ async def _transcribe_voice(file_bytes: bytes) -> str | None:
     return await asyncio.to_thread(_recognize, file_bytes)
 
 
+# In-memory cache for voice transcription texts (callback_data limited to 64 bytes)
+import uuid as _uuid
+
+_voice_cache: dict[str, str] = {}
+
+
+def _store_voice_text(text: str) -> str:
+    """Store text and return a short ID for callback_data."""
+    short_id = _uuid.uuid4().hex[:8]
+    _voice_cache[short_id] = text
+    # Keep cache small — remove oldest if >100 entries
+    if len(_voice_cache) > 100:
+        oldest = next(iter(_voice_cache))
+        del _voice_cache[oldest]
+    return short_id
+
+
+def _get_voice_text(short_id: str) -> str | None:
+    return _voice_cache.pop(short_id, None)
+
+
 VOICE_COMMANDS = {
     # (keywords in recognized text) → (command_func, needs_args, description)
     "новая сессия": ("newsession", True, "📝 Создаю сессию..."),
@@ -1585,17 +1608,18 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     await handler_func(update, context)
             else:
                 # Short but no command matched — ask what to do
+                vid = _store_voice_text(text)
                 await msg.edit_text(f"🎛 «{text}»\n\nКоманда не распознана.")
                 await update.message.reply_text(
                     "Что сделать?",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton(
                             "📝 Новая сессия",
-                            callback_data=f"voice_new:{text[:200]}",
+                            callback_data=f"vnew:{vid}",
                         )],
                         [InlineKeyboardButton(
                             "💬 Отправить в сессию",
-                            callback_data=f"voice_send:{text[:200]}",
+                            callback_data=f"vsend:{vid}",
                         )],
                     ]),
                 )
