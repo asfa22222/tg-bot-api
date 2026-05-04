@@ -492,7 +492,14 @@ async def cmd_newsession(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await msg.edit_text(f"❌ {e}")
         return
     except devin_api.DevinAPIError as e:
-        await msg.edit_text(f"❌ Ошибка API: {e.detail}")
+        if e.status_code == 429:
+            await msg.edit_text(
+                "⚠️ Лимит исчерпан!\n\n"
+                "Дневная или недельная квота Devin закончилась.\n"
+                "Подождите сброса или добавьте другой ключ: /addkey"
+            )
+        else:
+            await msg.edit_text(f"❌ Ошибка API: {e.detail}")
         return
 
     session_id = result["session_id"]
@@ -608,6 +615,51 @@ async def cmd_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         parse_mode="Markdown",
         disable_web_page_preview=True,
     )
+
+
+async def cmd_devin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show all sessions on the Devin account (admin only)."""
+    if not await _check_whitelist(update):
+        return
+
+    user = update.effective_user
+    if not await db.is_admin(user.id):
+        await update.message.reply_text("⛔ Только для владельца бота.")
+        return
+
+    await update.message.reply_text("🔄 Загружаю сессии с аккаунта Devin...")
+
+    try:
+        sessions = await devin_api.list_account_sessions(limit=20)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка API: {e}")
+        return
+
+    if not sessions:
+        await update.message.reply_text("Нет сессий на аккаунте Devin.")
+        return
+
+    lines = [f"🌐 *Сессии на аккаунте Devin ({len(sessions)}):*\n"]
+    for s in sessions:
+        title = s.get("title") or s.get("prompt", "")[:40] or "Без названия"
+        status = s.get("status_enum") or s.get("status", "unknown")
+        session_id = s.get("session_id", s.get("id", "?"))
+        url = s.get("url", f"https://app.devin.ai/sessions/{session_id}")
+        created = s.get("created_at", "")[:10]
+        status_icon = STATUS_LABELS.get(status, f"❓ {status}").split(" ")[0]
+        lines.append(
+            f"{status_icon} *{title[:35]}*\n"
+            f"   ID: `{session_id[:12]}...`\n"
+            f"   📅 {created} | 🔗 [Открыть]({url})"
+        )
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        disable_web_page_preview=True,
+    )
+
+    await db.log_activity(user.id, user.username, "devin_sessions", f"viewed {len(sessions)} sessions")
 
 
 async def cmd_switch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1864,6 +1916,7 @@ async def post_init(application: Application) -> None:
         BotCommand("users", "👥 Вайтлист"),
         BotCommand("broadcast", "📢 Рассылка всем"),
         BotCommand("log", "📜 Лог действий"),
+        BotCommand("devin", "🌐 Сессии на аккаунте Devin"),
         BotCommand("webapp", "📱 Mini App"),
         BotCommand("myid", "🆔 Мой Telegram ID"),
     ]
@@ -1960,6 +2013,7 @@ def main() -> None:
     app.add_handler(CommandHandler("sessions", cmd_sessions))
     app.add_handler(CommandHandler("switch", cmd_switch))
     app.add_handler(CommandHandler("delsession", cmd_delsession))
+    app.add_handler(CommandHandler("devin", cmd_devin))
 
     # Key management
     app.add_handler(CommandHandler("addkey", cmd_addkey))

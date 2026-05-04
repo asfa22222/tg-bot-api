@@ -184,6 +184,18 @@ async def get_session(session_id: str) -> dict:
     return result  # type: ignore[return-value]
 
 
+async def list_account_sessions(limit: int = 20, offset: int = 0) -> list[dict]:
+    """List all sessions on the Devin account."""
+    result, _ = await _request_with_rotation(
+        "GET", f"/sessions?limit={limit}&offset={offset}"
+    )
+    if isinstance(result, list):
+        return result
+    if isinstance(result, dict):
+        return result.get("sessions", result.get("data", []))
+    return []
+
+
 # ---------------------------------------------------------------------------
 # File upload / download
 # ---------------------------------------------------------------------------
