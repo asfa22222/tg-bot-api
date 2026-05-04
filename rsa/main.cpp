@@ -87,29 +87,29 @@ void encryptFile() {
     long long p, q, Kc;
     char inputFile[256], outputFile[256];
 
-    cout << "=== Шифрование RSA ===" << endl;
-    cout << "Введите p (простое число): ";
+    cout << "=== RSA Encryption ===" << endl;
+    cout << "Enter p (prime number): ";
     cin >> p;
-    cout << "Введите q (простое число): ";
+    cout << "Enter q (prime number): ";
     cin >> q;
-    cout << "Введите закрытый ключ Kc: ";
+    cout << "Enter private key Kc: ";
     cin >> Kc;
-    cout << "Введите имя входного файла: ";
+    cout << "Enter input file name: ";
     cin >> inputFile;
-    cout << "Введите имя выходного файла: ";
+    cout << "Enter output file name: ";
     cin >> outputFile;
 
     // проверки
     if (!isPrime(p)) {
-        cerr << "Ошибка: p = " << p << " не является простым числом!" << endl;
+        cerr << "Error: p = " << p << " is not a prime number!" << endl;
         return;
     }
     if (!isPrime(q)) {
-        cerr << "Ошибка: q = " << q << " не является простым числом!" << endl;
+        cerr << "Error: q = " << q << " is not a prime number!" << endl;
         return;
     }
     if (p == q) {
-        cerr << "Ошибка: p и q должны быть различными!" << endl;
+        cerr << "Error: p and q must be different!" << endl;
         return;
     }
 
@@ -117,16 +117,16 @@ void encryptFile() {
     long long phi = (p - 1) * (q - 1);
 
     if (r < 256) {
-        cerr << "Ошибка: r = p*q = " << r << " слишком мало (должно быть >= 256 для побайтового шифрования)!" << endl;
+        cerr << "Error: r = p*q = " << r << " is too small (must be >= 256 for byte encryption)!" << endl;
         return;
     }
 
     if (Kc <= 1 || Kc >= phi) {
-        cerr << "Ошибка: Kc должен быть в диапазоне (1, " << phi << ")!" << endl;
+        cerr << "Error: Kc must be in range (1, " << phi << ")!" << endl;
         return;
     }
     if (gcd(Kc, phi) != 1) {
-        cerr << "Ошибка: Kc = " << Kc << " и phi(r) = " << phi << " не взаимно простые!" << endl;
+        cerr << "Error: Kc = " << Kc << " and phi(r) = " << phi << " are not coprime!" << endl;
         return;
     }
 
@@ -134,30 +134,30 @@ void encryptFile() {
     long long Ko = euclidEx(phi, Kc);
 
     cout << endl;
-    cout << "Параметры RSA:" << endl;
+    cout << "RSA parameters:" << endl;
     cout << "  p = " << p << endl;
     cout << "  q = " << q << endl;
     cout << "  r = p*q = " << r << endl;
     cout << "  phi(r) = " << phi << endl;
-    cout << "  Kc (закрытый ключ) = " << Kc << endl;
-    cout << "  Ko (открытый ключ) = " << Ko << endl;
+    cout << "  Kc (private key) = " << Kc << endl;
+    cout << "  Ko (public key) = " << Ko << endl;
 
     // проверка правильности вычисления Ko
     if ((Ko * Kc) % phi != 1) {
-        cerr << "Ошибка вычисления открытого ключа!" << endl;
+        cerr << "Error: public key computation failed!" << endl;
         return;
     }
 
     // чтение входного файла
     ifstream fin(inputFile, ios::binary);
     if (!fin) {
-        cerr << "Ошибка: не удалось открыть файл " << inputFile << endl;
+        cerr << "Error: cannot open file " << inputFile << endl;
         return;
     }
 
     ofstream fout(outputFile, ios::binary);
     if (!fout) {
-        cerr << "Ошибка: не удалось открыть файл " << outputFile << endl;
+        cerr << "Error: cannot open file " << outputFile << endl;
         return;
     }
 
@@ -174,7 +174,7 @@ void encryptFile() {
     fin.close();
     fout.close();
 
-    cout << "Шифрование завершено. Результат записан в " << outputFile << endl;
+    cout << "Encryption complete. Result saved to " << outputFile << endl;
 }
 
 // ========== 2. РАСШИФРОВАНИЕ ==========
@@ -182,34 +182,34 @@ void decryptFile() {
     long long r, Kc;
     char inputFile[256], outputFile[256];
 
-    cout << "=== Расшифрование RSA ===" << endl;
-    cout << "Введите модуль r: ";
+    cout << "=== RSA Decryption ===" << endl;
+    cout << "Enter modulus r: ";
     cin >> r;
-    cout << "Введите закрытый ключ Kc: ";
+    cout << "Enter private key Kc: ";
     cin >> Kc;
-    cout << "Введите имя входного файла: ";
+    cout << "Enter input file name: ";
     cin >> inputFile;
-    cout << "Введите имя выходного файла: ";
+    cout << "Enter output file name: ";
     cin >> outputFile;
 
     if (r < 256) {
-        cerr << "Ошибка: r = " << r << " слишком мало!" << endl;
+        cerr << "Error: r = " << r << " is too small!" << endl;
         return;
     }
     if (Kc <= 0) {
-        cerr << "Ошибка: Kc должен быть положительным!" << endl;
+        cerr << "Error: Kc must be positive!" << endl;
         return;
     }
 
     ifstream fin(inputFile, ios::binary);
     if (!fin) {
-        cerr << "Ошибка: не удалось открыть файл " << inputFile << endl;
+        cerr << "Error: cannot open file " << inputFile << endl;
         return;
     }
 
     ofstream fout(outputFile, ios::binary);
     if (!fout) {
-        cerr << "Ошибка: не удалось открыть файл " << outputFile << endl;
+        cerr << "Error: cannot open file " << outputFile << endl;
         return;
     }
 
@@ -225,7 +225,7 @@ void decryptFile() {
     fin.close();
     fout.close();
 
-    cout << "Расшифрование завершено. Результат записан в " << outputFile << endl;
+    cout << "Decryption complete. Result saved to " << outputFile << endl;
 }
 
 // ========== 3. ВЗЛОМ (ДЕШИФРОВАНИЕ) ==========
@@ -233,32 +233,32 @@ void crackFile() {
     long long r, Ko;
     char inputFile[256], outputFile[256];
 
-    cout << "=== Взлом RSA ===" << endl;
-    cout << "Введите модуль r: ";
+    cout << "=== RSA Crack ===" << endl;
+    cout << "Enter modulus r: ";
     cin >> r;
-    cout << "Введите открытый ключ Ko: ";
+    cout << "Enter public key Ko: ";
     cin >> Ko;
-    cout << "Введите имя входного файла: ";
+    cout << "Enter input file name: ";
     cin >> inputFile;
-    cout << "Введите имя выходного файла: ";
+    cout << "Enter output file name: ";
     cin >> outputFile;
 
     if (r < 256) {
-        cerr << "Ошибка: r = " << r << " слишком мало!" << endl;
+        cerr << "Error: r = " << r << " is too small!" << endl;
         return;
     }
 
     // факторизация r для нахождения p и q
     long long p, q;
     if (!factorize(r, p, q)) {
-        cerr << "Ошибка: не удалось разложить r = " << r << " на простые множители!" << endl;
+        cerr << "Error: failed to factorize r = " << r << "!" << endl;
         return;
     }
 
     long long phi = (p - 1) * (q - 1);
 
     if (gcd(Ko, phi) != 1) {
-        cerr << "Ошибка: Ko и phi(r) не взаимно простые!" << endl;
+        cerr << "Error: Ko and phi(r) are not coprime!" << endl;
         return;
     }
 
@@ -266,22 +266,22 @@ void crackFile() {
     long long Kc = euclidEx(phi, Ko);
 
     cout << endl;
-    cout << "Взлом:" << endl;
+    cout << "Crack results:" << endl;
     cout << "  r = " << r << endl;
-    cout << "  Найдены множители: p = " << p << ", q = " << q << endl;
+    cout << "  Found factors: p = " << p << ", q = " << q << endl;
     cout << "  phi(r) = " << phi << endl;
-    cout << "  Ko (открытый ключ) = " << Ko << endl;
-    cout << "  Kc (вычисленный закрытый ключ) = " << Kc << endl;
+    cout << "  Ko (public key) = " << Ko << endl;
+    cout << "  Kc (computed private key) = " << Kc << endl;
 
     ifstream fin(inputFile, ios::binary);
     if (!fin) {
-        cerr << "Ошибка: не удалось открыть файл " << inputFile << endl;
+        cerr << "Error: cannot open file " << inputFile << endl;
         return;
     }
 
     ofstream fout(outputFile, ios::binary);
     if (!fout) {
-        cerr << "Ошибка: не удалось открыть файл " << outputFile << endl;
+        cerr << "Error: cannot open file " << outputFile << endl;
         return;
     }
 
@@ -297,15 +297,15 @@ void crackFile() {
     fin.close();
     fout.close();
 
-    cout << "Дешифрование (взлом) завершено. Результат записан в " << outputFile << endl;
+    cout << "Crack complete. Result saved to " << outputFile << endl;
 }
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
-        cout << "Использование:" << endl;
-        cout << "  " << argv[0] << " encrypt   — шифрование (ввод p, q, Kc)" << endl;
-        cout << "  " << argv[0] << " decrypt   — расшифрование (ввод r, Kc)" << endl;
-        cout << "  " << argv[0] << " crack     — взлом/дешифрование (ввод r, Ko)" << endl;
+        cout << "Usage:" << endl;
+        cout << "  " << argv[0] << " encrypt   - encryption (input: p, q, Kc)" << endl;
+        cout << "  " << argv[0] << " decrypt   - decryption (input: r, Kc)" << endl;
+        cout << "  " << argv[0] << " crack     - crack/decipher (input: r, Ko)" << endl;
         return 1;
     }
 
@@ -318,7 +318,7 @@ int main(int argc, char* argv[]) {
     } else if (mode == "crack") {
         crackFile();
     } else {
-        cerr << "Ошибка: неизвестный режим '" << mode << "'." << endl;
+        cerr << "Error: unknown mode '" << mode << "'." << endl;
         return 1;
     }
 
