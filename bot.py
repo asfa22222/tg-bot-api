@@ -2012,9 +2012,34 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 # App lifecycle
 # ---------------------------------------------------------------------------
 
+async def _start_healthcheck_server() -> None:
+    """Minimal HTTP server for Railway health checks."""
+    from aiohttp import web
+
+    async def _health(_request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    app = web.Application()
+    app.router.add_get("/", _health)
+    app.router.add_get("/health", _health)
+    port = int(os.environ.get("PORT", "8080"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info("Healthcheck server started on port %d", port)
+    return runner
+
+
 async def post_init(application: Application) -> None:
     await db.get_db()
     logger.info("Database initialized")
+
+    # Start healthcheck HTTP server for Railway
+    try:
+        application.bot_data["health_runner"] = await _start_healthcheck_server()
+    except Exception as e:
+        logger.warning("Failed to start healthcheck server: %s", e)
 
     # Register bot commands menu (shows on "/" in chat)
     from telegram import BotCommand, BotCommandScopeAllPrivateChats
@@ -2057,6 +2082,10 @@ async def post_init(application: Application) -> None:
 
 
 async def post_shutdown(application: Application) -> None:
+    runner = application.bot_data.get("health_runner")
+    if runner:
+        await runner.cleanup()
+        logger.info("Healthcheck server stopped")
     await db.close_db()
     logger.info("Database closed")
 
