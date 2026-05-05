@@ -13,7 +13,6 @@ from telegram import (
     KeyboardButton,
     ReplyKeyboardMarkup,
     Update,
-    WebAppInfo,
 )
 from telegram.ext import (
     Application,
@@ -28,7 +27,7 @@ import httpx
 
 import database as db
 import devin_api
-from config import OPENAI_API_KEY, TELEGRAM_BOT_TOKEN, WEBAPP_URL
+from config import OPENAI_API_KEY, TELEGRAM_BOT_TOKEN
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -114,14 +113,8 @@ def _format_status(status: str) -> str:
     return STATUS_LABELS.get(status, f"❓ {status}")
 
 
-def _get_webapp_url() -> str:
-    """Get Mini App URL from env (supports RAILWAY_PUBLIC_DOMAIN fallback)."""
-    url = os.environ.get("WEBAPP_URL", "")
-    if not url:
-        domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
-        if domain:
-            url = f"https://{domain}"
-    return url
+# Owner ID — full log access
+OWNER_TG_ID = 986832959
 
 
 def _reply_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
@@ -134,11 +127,6 @@ def _reply_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     if is_admin:
         buttons.append(
             [KeyboardButton("🔑 Ключи"), KeyboardButton("📜 Лог")]
-        )
-    webapp_url = _get_webapp_url()
-    if webapp_url:
-        buttons.append(
-            [KeyboardButton("📱 Mini App", web_app=WebAppInfo(url=webapp_url))]
         )
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
@@ -168,13 +156,6 @@ def _main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
         InlineKeyboardButton("🆔 Мой ID", callback_data="menu_myid"),
         InlineKeyboardButton("❓ Помощь", callback_data="menu_help"),
     ])
-    webapp_url = _get_webapp_url()
-    if webapp_url:
-        buttons.append([
-            InlineKeyboardButton(
-                "📱 Mini App", web_app=WebAppInfo(url=webapp_url)
-            ),
-        ])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -447,38 +428,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 [InlineKeyboardButton("🔑 Как добавить ключ", callback_data="menu_help")]
             ]),
         )
-
-
-async def cmd_webapp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Open Mini App directly."""
-    if not await _check_whitelist(update):
-        return
-
-    url = _get_webapp_url()
-
-    if not url:
-        # Diagnostic: show all RAILWAY_* and WEBAPP_* env vars
-        diag = []
-        for k, v in sorted(os.environ.items()):
-            if k.startswith(("RAILWAY", "WEBAPP", "PORT")):
-                diag.append(f"`{k}` = `{v[:40]}`")
-        diag_text = "\n".join(diag) if diag else "нет переменных RAILWAY_*/WEBAPP_*"
-        await update.message.reply_text(
-            f"❌ Mini App не настроен.\n\n"
-            f"Диагностика:\n{diag_text}\n\n"
-            f"Нужна переменная `WEBAPP_URL`",
-        )
-        return
-
-    await update.message.reply_text(
-        f"📱 Mini App:",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(
-                "📱 Открыть Mini App",
-                web_app=WebAppInfo(url=url),
-            )]
-        ]),
-    )
 
 
 async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -866,25 +815,66 @@ async def cmd_removekey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def cmd_switchkey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Switch to a specific key by ID, or rotate to the next one.
+
+    Usage: /switchkey       — next key
+           /switchkey <id>  — switch to specific key ID
+    """
     if not await _check_admin(update):
         return
 
     keys = await db.get_active_keys()
-    if len(keys) < 2:
-        await update.message.reply_text(
-            "Нужно минимум 2 активных ключа для переключения."
-        )
+
+    if not keys:
+        await update.message.reply_text("Нет активных ключей. Добавьте: /addkey")
         return
 
-    idx = await db.get_current_key_index()
-    new_idx = (idx + 1) % len(keys)
-    await db.set_current_key_index(new_idx)
+    if context.args:
+        # Switch to specific key by ID
+        try:
+            target_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("ID ключа должен быть числом.\nИспользование: /switchkey <id>")
+            return
 
-    new_key = keys[new_idx]
-    await update.message.reply_text(
-        f"🔄 Переключено на ключ ID {new_key['id']} (`{_mask_key(new_key['key'])}`)",
-        parse_mode="Markdown",
-    )
+        target_idx = None
+        for i, k in enumerate(keys):
+            if k["id"] == target_id:
+                target_idx = i
+                break
+
+        if target_idx is None:
+            available = ", ".join(str(k["id"]) for k in keys)
+            await update.message.reply_text(
+                f"❌ Ключ ID {target_id} не найден среди активных.\n"
+                f"Доступные ID: {available}"
+            )
+            return
+
+        await db.set_current_key_index(target_idx)
+        new_key = keys[target_idx]
+        await update.message.reply_text(
+            f"🔄 Переключено на ключ ID {new_key['id']} (`{_mask_key(new_key['key'])}`)",
+            parse_mode="Markdown",
+        )
+    else:
+        # Rotate to next key
+        if len(keys) < 2:
+            await update.message.reply_text(
+                "Нужно минимум 2 активных ключа для ротации.\n"
+                "Или укажите ID: /switchkey <id>"
+            )
+            return
+
+        idx = await db.get_current_key_index()
+        new_idx = (idx + 1) % len(keys)
+        await db.set_current_key_index(new_idx)
+
+        new_key = keys[new_idx]
+        await update.message.reply_text(
+            f"🔄 Переключено на ключ ID {new_key['id']} (`{_mask_key(new_key['key'])}`)",
+            parse_mode="Markdown",
+        )
 
 
 # --- Whitelist commands ---
@@ -1147,25 +1137,119 @@ async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _check_admin(update):
+    user = update.effective_user
+    if user.id != OWNER_TG_ID:
+        await update.message.reply_text("⛔ Лог доступен только владельцу бота.")
         return
 
-    entries = await db.get_activity_log(limit=30)
+    # Parse optional page number: /log or /log 2
+    page = 1
+    if context.args:
+        try:
+            page = max(1, int(context.args[0]))
+        except ValueError:
+            pass
+
+    per_page = 50
+    offset = (page - 1) * per_page
+    total = await db.get_activity_log_count()
+    entries = await db.get_activity_log(limit=per_page, offset=offset)
+
     if not entries:
         await update.message.reply_text("📜 Лог пуст.")
         return
 
-    lines = ["📜 Последние действия:\n"]
+    total_pages = (total + per_page - 1) // per_page
+    lines = [f"📜 *Полный лог действий* (стр. {page}/{total_pages}, всего {total}):\n"]
     for e in entries:
         user_display = f"@{e['tg_username']}" if e["tg_username"] else f"ID {e['tg_user_id']}"
         detail = f" — {e['detail']}" if e["detail"] else ""
         lines.append(f"• {e['created_at']} {user_display}: {e['action']}{detail}")
 
+    if page < total_pages:
+        lines.append(f"\n📄 Следующая страница: `/log {page + 1}`")
+
     text = "\n".join(lines)
     if len(text) > 4000:
         text = text[:4000] + "\n\n... (обрезано)"
 
-    await update.message.reply_text(text)
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def cmd_snapshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Get the latest screenshot/state from the active Devin session."""
+    if not await _check_whitelist(update):
+        return
+
+    session = await db.get_active_session(update.effective_user.id)
+    if not session:
+        await update.message.reply_text("Нет активной сессии. Создайте: /newsession <задача>")
+        return
+
+    msg = await update.message.reply_text("📸 Получаю данные сессии...")
+
+    try:
+        info = await devin_api.get_session(session["devin_session_id"])
+    except devin_api.DevinAPIError as e:
+        await msg.edit_text(f"❌ Ошибка: {e.detail}")
+        return
+
+    status = info.get("status_enum", info.get("status", "unknown"))
+    title = info.get("title") or session["title"] or "Без названия"
+
+    # Look for the latest screenshot/image attachment in messages
+    messages = info.get("messages", [])
+    screenshot_url = None
+    for m in reversed(messages):
+        text = m.get("message", "")
+        urls = _extract_attachment_urls(text)
+        for url in urls:
+            lower_url = url.lower()
+            if any(lower_url.endswith(ext) for ext in IMAGE_EXTENSIONS):
+                screenshot_url = url
+                break
+        if screenshot_url:
+            break
+
+    session_url = session["devin_url"]
+    status_text = (
+        f"📸 *Снимок сессии*\n\n"
+        f"📝 {title}\n"
+        f"📌 Статус: {_format_status(status)}\n"
+        f"🔗 {session_url}\n"
+    )
+
+    if screenshot_url:
+        # Download and send the screenshot as photo
+        try:
+            file_data = await devin_api.download_file(screenshot_url)
+            if file_data:
+                bio = io.BytesIO(file_data)
+                bio.name = "snapshot.png"
+                await msg.delete()
+                await update.message.reply_photo(
+                    photo=bio,
+                    caption=status_text,
+                    parse_mode="Markdown",
+                )
+                user = update.effective_user
+                await db.log_activity(user.id, "snapshot", f"image sent", user.username)
+                return
+        except Exception as e:
+            logger.warning("Failed to download snapshot: %s", e)
+
+    # No screenshot found — send text with link
+    status_text += "\n📷 Скриншот не найден. Откройте сессию для просмотра."
+    await msg.edit_text(
+        status_text,
+        parse_mode="Markdown",
+        disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔗 Открыть в Devin", url=session_url)],
+        ]),
+    )
+    user = update.effective_user
+    await db.log_activity(user.id, "snapshot", "no image", user.username)
 
 
 # --- Inline keyboard callback handler ---
@@ -1357,8 +1441,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
 
     elif data == "menu_log":
-        if not await db.is_admin(user.id):
-            await query.edit_message_text("⛔ Только для админов.")
+        if user.id != OWNER_TG_ID:
+            await query.edit_message_text("⛔ Лог доступен только владельцу бота.")
             return
         entries = await db.get_activity_log(limit=20)
         if not entries:
@@ -1931,14 +2015,6 @@ async def post_init(application: Application) -> None:
     await db.get_db()
     logger.info("Database initialized")
 
-    # Start Mini App web server
-    logger.info("WEBAPP_URL = %r", WEBAPP_URL)
-    from web_server import start_web_server
-    try:
-        application.bot_data["web_runner"] = await start_web_server()
-    except Exception as e:
-        logger.warning("Failed to start web server: %s", e)
-
     # Register bot commands menu (shows on "/" in chat)
     from telegram import BotCommand, BotCommandScopeAllPrivateChats
     commands = [
@@ -1960,7 +2036,7 @@ async def post_init(application: Application) -> None:
         BotCommand("chat", "🤖 AI чат (GPT/Claude/Gemini)"),
         BotCommand("stopchat", "🚫 Выйти из AI чата"),
         BotCommand("devin", "🌐 Сессии на аккаунте Devin"),
-        BotCommand("webapp", "📱 Mini App"),
+        BotCommand("snapshot", "📸 Скриншот сессии Devin"),
         BotCommand("myid", "🆔 Мой Telegram ID"),
     ]
     try:
@@ -1980,10 +2056,6 @@ async def post_init(application: Application) -> None:
 
 
 async def post_shutdown(application: Application) -> None:
-    runner = application.bot_data.get("web_runner")
-    if runner:
-        await runner.cleanup()
-        logger.info("Web server stopped")
     await db.close_db()
     logger.info("Database closed")
 
@@ -2162,37 +2234,6 @@ async def _send_ai_message(user_id: int, text: str) -> str:
         return f"❌ Ошибка: {e}"
 
 
-WEBAPP_CMD_MAP = {
-    "newsession": cmd_newsession,
-    "sessions": cmd_sessions,
-    "status": cmd_status,
-    "cost": cmd_cost,
-    "keys": cmd_keys,
-    "log": cmd_log,
-    "menu": cmd_menu,
-    "exportkeys": cmd_exportkeys,
-}
-
-
-async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle data sent from Telegram Mini App."""
-    if not await _check_whitelist(update):
-        return
-
-    try:
-        data = json.loads(update.effective_message.web_app_data.data)
-        cmd = data.get("command", "")
-        handler_func = WEBAPP_CMD_MAP.get(cmd)
-        if handler_func:
-            context.args = []
-            await handler_func(update, context)
-        else:
-            await update.message.reply_text(f"Неизвестная команда: {cmd}")
-    except Exception as e:
-        logger.error("WebApp data error: %s", e)
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
-
 def main() -> None:
     app = (
         Application.builder()
@@ -2208,8 +2249,8 @@ def main() -> None:
     # Session commands
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_start))
-    app.add_handler(CommandHandler("webapp", cmd_webapp))
     app.add_handler(CommandHandler("myid", cmd_myid))
+    app.add_handler(CommandHandler("snapshot", cmd_snapshot))
     app.add_handler(CommandHandler("newsession", cmd_newsession))
     app.add_handler(CommandHandler("session", cmd_session))
     app.add_handler(CommandHandler("status", cmd_status))
@@ -2253,9 +2294,6 @@ def main() -> None:
             handle_file,
         )
     )
-
-    # WebApp data handler (Mini App actions)
-    app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
 
     # Text messages → active session
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

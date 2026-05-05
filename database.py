@@ -343,14 +343,20 @@ async def log_activity(
     await db.commit()
 
 
-async def get_activity_log(limit: int = 30) -> list[dict]:
+async def get_activity_log(limit: int = 30, offset: int = 0) -> list[dict]:
     db = await get_db()
     rows = await db.execute_fetchall(
         "SELECT tg_user_id, tg_username, action, detail, created_at "
-        "FROM activity_log ORDER BY created_at DESC LIMIT ?",
-        (limit,),
+        "FROM activity_log ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        (limit, offset),
     )
     return [dict(r) for r in rows]
+
+
+async def get_activity_log_count() -> int:
+    db = await get_db()
+    rows = await db.execute_fetchall("SELECT COUNT(*) as cnt FROM activity_log")
+    return rows[0]["cnt"]
 
 
 # --- Usage Stats ---
