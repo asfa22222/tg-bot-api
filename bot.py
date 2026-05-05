@@ -38,6 +38,24 @@ logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS = 15
 
+# ---------------------------------------------------------------------------
+# AI Chat — OpenAI-compatible API (only for specific user)
+# ---------------------------------------------------------------------------
+
+AI_CHAT_USER_ID = 986832959
+AI_CHAT_API_KEY = "sta_eb4a9abaab7cd9aab51bcac7e39773ee381b3aa12ae50a48"
+AI_CHAT_API_BASE = "https://api.freetheai.xyz/v1"
+
+AI_MODELS = {
+    "gpt5": {"id": "gpt-5.4", "name": "GPT 5.4"},
+    "claude": {"id": "claude-sonnet-4.6", "name": "Claude Sonnet 4.6"},
+    "glm": {"id": "glm-5.1", "name": "GLM 5.1"},
+    "gemini": {"id": "gemini-3.1-pro", "name": "Gemini 3.1 Pro"},
+}
+
+# user_id -> {"model": "gpt5", "history": [...]}
+_ai_chat_state: dict[int, dict] = {}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1163,6 +1181,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     data = query.data
 
+    # AI Chat model selection callbacks
+    if data and (data.startswith("ai_model:") or data in ("ai_clear", "ai_stop")):
+        await _handle_ai_model_callback(update, context)
+        return
+
     if data == "menu_newsession":
         await query.edit_message_text(
             "📝 Отправьте команду:\n`/newsession <описание задачи>`\n\n"
@@ -1495,6 +1518,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text = update.message.text
     if not text:
         return
+
+    # AI Chat mode — intercept messages if user has active AI chat
+    user = update.effective_user
+    if user.id in _ai_chat_state:
+        # Still allow keyboard buttons
+        if text not in REPLY_KB_ACTIONS:
+            await context.bot.send_chat_action(
+                chat_id=update.effective_chat.id, action="typing"
+            )
+            model_name = AI_MODELS[_ai_chat_state[user.id]["model"]]["name"]
+            reply = await _send_ai_message(user.id, text)
+            # Split long messages (Telegram 4096 char limit)
+            if len(reply) > 4000:
+                for i in range(0, len(reply), 4000):
+                    await update.message.reply_text(reply[i:i+4000])
+            else:
+                await update.message.reply_text(reply)
+            return
 
     # Handle reply keyboard button presses
     kb_action = REPLY_KB_ACTIONS.get(text)
@@ -1916,6 +1957,8 @@ async def post_init(application: Application) -> None:
         BotCommand("users", "👥 Вайтлист"),
         BotCommand("broadcast", "📢 Рассылка всем"),
         BotCommand("log", "📜 Лог действий"),
+        BotCommand("chat", "🤖 AI чат (GPT/Claude/Gemini)"),
+        BotCommand("stopchat", "🚫 Выйти из AI чата"),
         BotCommand("devin", "🌐 Сессии на аккаунте Devin"),
         BotCommand("webapp", "📱 Mini App"),
         BotCommand("myid", "🆔 Мой Telegram ID"),
@@ -1957,6 +2000,166 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
             )
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# AI Chat commands
+# ---------------------------------------------------------------------------
+
+async def cmd_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start or manage AI chat mode."""
+    if not await _check_whitelist(update):
+        return
+
+    user = update.effective_user
+    if user.id != AI_CHAT_USER_ID:
+        await update.message.reply_text("⛔ AI чат доступен только владельцу бота.")
+        return
+
+    state = _ai_chat_state.get(user.id)
+
+    # /chat без аргументов — показать меню выбора модели
+    buttons = []
+    for key, m in AI_MODELS.items():
+        current = " ✅" if state and state.get("model") == key else ""
+        buttons.append([
+            InlineKeyboardButton(
+                f"{m['name']}{current}",
+                callback_data=f"ai_model:{key}",
+            )
+        ])
+    if state:
+        buttons.append([
+            InlineKeyboardButton("🗑 Очистить историю", callback_data="ai_clear"),
+            InlineKeyboardButton("🚫 Выйти из чата", callback_data="ai_stop"),
+        ])
+
+    current_model = AI_MODELS[state["model"]]["name"] if state else "не выбрана"
+    history_len = len(state["history"]) // 2 if state else 0
+
+    await update.message.reply_text(
+        f"🤖 *AI Chat*\n\n"
+        f"Модель: *{current_model}*\n"
+        f"История: {history_len} сообщений\n\n"
+        f"Выберите модель:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def _handle_ai_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle AI model selection callback."""
+    query = update.callback_query
+    user = query.from_user
+
+    if user.id != AI_CHAT_USER_ID:
+        await query.answer("⛔ Нет доступа")
+        return
+
+    data = query.data
+
+    if data == "ai_clear":
+        state = _ai_chat_state.get(user.id)
+        if state:
+            state["history"] = []
+        await query.answer("🗑 История очищена")
+        await query.edit_message_text("🗑 История чата очищена. Напишите сообщение для продолжения.")
+        return
+
+    if data == "ai_stop":
+        _ai_chat_state.pop(user.id, None)
+        await query.answer("🚫 Чат выключен")
+        await query.edit_message_text(
+            "🚫 AI чат выключен. Сообщения снова идут в Devin.\n"
+            "Включить: /chat"
+        )
+        return
+
+    if data.startswith("ai_model:"):
+        model_key = data.split(":", 1)[1]
+        if model_key not in AI_MODELS:
+            await query.answer("Неизвестная модель")
+            return
+
+        if user.id not in _ai_chat_state:
+            _ai_chat_state[user.id] = {"model": model_key, "history": []}
+        else:
+            _ai_chat_state[user.id]["model"] = model_key
+
+        model_name = AI_MODELS[model_key]["name"]
+        await query.answer(f"Модель: {model_name}")
+        await query.edit_message_text(
+            f"🤖 Модель: *{model_name}*\n\n"
+            f"Пишите сообщения — отвечу от ИИ.\n"
+            f"Команды:\n"
+            f"/chat — сменить модель\n"
+            f"/stopchat — выйти из AI чата",
+            parse_mode="Markdown",
+        )
+        return
+
+
+async def cmd_stopchat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Stop AI chat mode."""
+    user = update.effective_user
+    if _ai_chat_state.pop(user.id, None):
+        await update.message.reply_text(
+            "🚫 AI чат выключен. Сообщения снова идут в Devin.\n"
+            "Включить: /chat"
+        )
+    else:
+        await update.message.reply_text("AI чат не был включён.")
+
+
+async def _send_ai_message(user_id: int, text: str) -> str:
+    """Send message to AI and return response."""
+    state = _ai_chat_state.get(user_id)
+    if not state:
+        return "AI чат не включён. Напишите /chat"
+
+    model_key = state["model"]
+    model_id = AI_MODELS[model_key]["id"]
+    history = state["history"]
+
+    # Add user message
+    history.append({"role": "user", "content": text})
+
+    # Keep last 20 messages to avoid token limits
+    if len(history) > 20:
+        history[:] = history[-20:]
+
+    messages = [
+        {"role": "system", "content": "You are a helpful AI assistant. Respond in the same language as the user."},
+        *history,
+    ]
+
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{AI_CHAT_API_BASE}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {AI_CHAT_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model_id,
+                    "messages": messages,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            reply = data["choices"][0]["message"]["content"]
+
+            # Add assistant reply to history
+            history.append({"role": "assistant", "content": reply})
+
+            return reply
+    except httpx.HTTPStatusError as e:
+        logger.error("AI API error: %s %s", e.response.status_code, e.response.text[:200])
+        return f"❌ Ошибка AI API: {e.response.status_code}"
+    except Exception as e:
+        logger.error("AI chat error: %s", e)
+        return f"❌ Ошибка: {e}"
 
 
 WEBAPP_CMD_MAP = {
@@ -2032,6 +2235,10 @@ def main() -> None:
     app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("cost", cmd_cost))
     app.add_handler(CommandHandler("log", cmd_log))
+
+    # AI Chat
+    app.add_handler(CommandHandler("chat", cmd_chat))
+    app.add_handler(CommandHandler("stopchat", cmd_stopchat))
 
     # Inline keyboard callbacks
     app.add_handler(CallbackQueryHandler(handle_callback))
