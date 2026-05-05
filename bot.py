@@ -47,10 +47,10 @@ AI_CHAT_API_KEY = "sta_eb4a9abaab7cd9aab51bcac7e39773ee381b3aa12ae50a48"
 AI_CHAT_API_BASE = "https://api.freetheai.xyz/v1"
 
 AI_MODELS = {
-    "gpt5": {"id": "gpt-5.4", "name": "GPT 5.4"},
-    "claude": {"id": "claude-sonnet-4.6", "name": "Claude Sonnet 4.6"},
-    "glm": {"id": "glm-5.1", "name": "GLM 5.1"},
-    "gemini": {"id": "gemini-3.1-pro", "name": "Gemini 3.1 Pro"},
+    "gpt5": {"id": "cat/gpt-5.4", "name": "GPT 5.4"},
+    "claude": {"id": "cat/claude-4-6-sonnet", "name": "Claude Sonnet 4.6"},
+    "glm": {"id": "bbg/zai-org/GLM-5.1", "name": "GLM 5.1"},
+    "gemini": {"id": "cat/gemini-3-1-pro", "name": "Gemini 3.1 Pro"},
 }
 
 # user_id -> {"model": "gpt5", "history": [...]}
