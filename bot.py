@@ -1142,38 +1142,39 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("⛔ Лог доступен только владельцу бота.")
         return
 
-    # Parse optional page number: /log or /log 2
-    page = 1
-    if context.args:
-        try:
-            page = max(1, int(context.args[0]))
-        except ValueError:
-            pass
-
-    per_page = 50
-    offset = (page - 1) * per_page
     total = await db.get_activity_log_count()
-    entries = await db.get_activity_log(limit=per_page, offset=offset)
-
-    if not entries:
+    if total == 0:
         await update.message.reply_text("📜 Лог пуст.")
         return
 
-    total_pages = (total + per_page - 1) // per_page
-    lines = [f"📜 Полный лог действий (стр. {page}/{total_pages}, всего {total}):\n"]
+    # First page in chat
+    per_page = 50
+    entries = await db.get_activity_log(limit=per_page, offset=0)
+
+    lines = [f"📜 Лог действий (последние {min(per_page, total)} из {total}):\n"]
     for e in entries:
         user_display = f"@{e['tg_username']}" if e["tg_username"] else f"ID {e['tg_user_id']}"
         detail = f" — {e['detail']}" if e["detail"] else ""
         lines.append(f"• {e['created_at']} {user_display}: {e['action']}{detail}")
-
-    if page < total_pages:
-        lines.append(f"\n📄 Следующая страница: /log {page + 1}")
 
     text = "\n".join(lines)
     if len(text) > 4000:
         text = text[:4000] + "\n\n... (обрезано)"
 
     await update.message.reply_text(text)
+
+    # Full log as .txt file
+    all_entries = await db.get_activity_log(limit=100000, offset=0)
+    file_lines = [f"Полный лог бота — всего {total} записей\n{'=' * 50}\n"]
+    for e in all_entries:
+        user_display = f"@{e['tg_username']}" if e["tg_username"] else f"ID {e['tg_user_id']}"
+        detail = f" — {e['detail']}" if e["detail"] else ""
+        file_lines.append(f"{e['created_at']} | {user_display} | {e['action']}{detail}")
+
+    file_content = "\n".join(file_lines)
+    bio = io.BytesIO(file_content.encode("utf-8"))
+    bio.name = "full_log.txt"
+    await update.message.reply_document(document=bio, caption=f"📜 Полный лог ({total} записей)")
 
 
 async def cmd_snapshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
