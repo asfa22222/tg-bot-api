@@ -100,10 +100,15 @@ def _mask_key(key: str) -> str:
 
 STATUS_LABELS = {
     "running": "🟢 Работает",
+    "working": "🟢 Работает",
     "suspended": "⏸ Ожидает ответа",
     "blocked": "⏸ Заблокирована",
+    "suspend_requested": "⏸ Остановка...",
+    "resume_requested": "▶️ Возобновление...",
+    "resumed": "🟢 Возобновлена",
     "stopped": "⏹ Остановлена",
     "finished": "✅ Завершена",
+    "expired": "⌛ Истекла",
     "error": "❌ Ошибка",
     "deleted": "🗑 Удалена",
 }
@@ -1177,6 +1182,36 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_document(document=bio, caption=f"📜 Полный лог ({total} записей)")
 
 
+def _find_image_url_in_messages(messages: list[dict]) -> str | None:
+    """Find the latest image URL in session messages."""
+    import re as _re
+
+    for m in reversed(messages):
+        text = m.get("message", "")
+        if not text:
+            continue
+
+        # 1) Try structured attachment URLs
+        urls = _extract_attachment_urls(text)
+        for url in urls:
+            if any(url.lower().endswith(ext) for ext in IMAGE_EXTENSIONS):
+                return url
+
+        # 2) Try any URL ending with image extension
+        all_urls = _re.findall(r'https?://[^\s\)\]"]+', text)
+        for url in all_urls:
+            url_clean = url.rstrip('.,;:!?')
+            if any(url_clean.lower().endswith(ext) for ext in IMAGE_EXTENSIONS):
+                return url_clean
+
+        # 3) Try devin attachment URLs (any file — might be an image)
+        for url in urls:
+            if "devin.ai/attachments" in url:
+                return url
+
+    return None
+
+
 async def cmd_snapshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Get the latest screenshot/state from the active Devin session."""
     if not await _check_whitelist(update):
@@ -1197,60 +1232,70 @@ async def cmd_snapshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     status = info.get("status_enum", info.get("status", "unknown"))
     title = info.get("title") or session["title"] or "Без названия"
-
-    # Look for the latest screenshot/image attachment in messages
-    messages = info.get("messages", [])
-    screenshot_url = None
-    for m in reversed(messages):
-        text = m.get("message", "")
-        urls = _extract_attachment_urls(text)
-        for url in urls:
-            lower_url = url.lower()
-            if any(lower_url.endswith(ext) for ext in IMAGE_EXTENSIONS):
-                screenshot_url = url
-                break
-        if screenshot_url:
-            break
-
     session_url = session["devin_url"]
-    status_text = (
-        f"📸 *Снимок сессии*\n\n"
-        f"📝 {title}\n"
-        f"📌 Статус: {_format_status(status)}\n"
-        f"🔗 {session_url}\n"
-    )
 
-    if screenshot_url:
-        # Download and send the screenshot as photo
+    # Collect last few messages for context
+    messages = info.get("messages", [])
+    last_messages = messages[-5:] if messages else []
+
+    # Build status text
+    status_lines = [
+        f"📸 Снимок сессии",
+        f"",
+        f"📝 {title}",
+        f"📌 Статус: {_format_status(status)}",
+        f"🔗 {session_url}",
+    ]
+
+    # Add last messages preview
+    if last_messages:
+        status_lines.append(f"")
+        status_lines.append(f"💬 Последние сообщения:")
+        for m in last_messages:
+            origin = m.get("origin", "devin")
+            icon = "🤖" if origin != "user" else "👤"
+            text = m.get("message", "")
+            # Truncate long messages
+            if len(text) > 150:
+                text = text[:150] + "..."
+            # Remove attachment markup for cleaner display
+            text = text.replace("\n", " ").strip()
+            if text:
+                status_lines.append(f"{icon} {text}")
+
+    status_text = "\n".join(status_lines)
+
+    # Try to find and send image
+    image_url = _find_image_url_in_messages(messages)
+
+    if image_url:
         try:
-            file_data = await devin_api.download_file(screenshot_url)
-            if file_data:
+            file_data = await devin_api.download_file(image_url)
+            if file_data and len(file_data) > 100:  # sanity check
                 bio = io.BytesIO(file_data)
                 bio.name = "snapshot.png"
+                caption = f"📸 {title}\n📌 {_format_status(status)}\n🔗 {session_url}"
                 await msg.delete()
-                await update.message.reply_photo(
-                    photo=bio,
-                    caption=status_text,
-                    parse_mode="Markdown",
-                )
+                await update.message.reply_photo(photo=bio, caption=caption)
                 user = update.effective_user
-                await db.log_activity(user.id, "snapshot", f"image sent", user.username)
+                await db.log_activity(user.id, "snapshot", "image sent", user.username)
                 return
         except Exception as e:
-            logger.warning("Failed to download snapshot: %s", e)
+            logger.warning("Failed to download snapshot image: %s", e)
 
-    # No screenshot found — send text with link
-    status_text += "\n📷 Скриншот не найден. Откройте сессию для просмотра."
+    # No image — send detailed text status
+    if len(status_text) > 4000:
+        status_text = status_text[:4000] + "\n\n... (обрезано)"
+
     await msg.edit_text(
         status_text,
-        parse_mode="Markdown",
         disable_web_page_preview=True,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔗 Открыть в Devin", url=session_url)],
         ]),
     )
     user = update.effective_user
-    await db.log_activity(user.id, "snapshot", "no image", user.username)
+    await db.log_activity(user.id, "snapshot", "text status", user.username)
 
 
 # --- Inline keyboard callback handler ---
