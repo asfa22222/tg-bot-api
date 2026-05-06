@@ -46,10 +46,10 @@ AI_CHAT_API_KEY = "sta_eb4a9abaab7cd9aab51bcac7e39773ee381b3aa12ae50a48"
 AI_CHAT_API_BASE = "https://api.freetheai.xyz/v1"
 
 AI_MODELS = {
-    "gpt5": {"id": "cat/gpt-5.4", "name": "GPT 5.4"},
-    "claude": {"id": "cat/claude-4-6-sonnet", "name": "Claude Sonnet 4.6"},
+    "gpt5": {"id": "yng/gpt-5.4", "name": "GPT 5.4"},
+    "claude": {"id": "yng/claude-4-6-sonnet", "name": "Claude Sonnet 4.6"},
     "glm": {"id": "bbg/zai-org/GLM-5.1", "name": "GLM 5.1"},
-    "gemini": {"id": "cat/gemini-3-1-pro", "name": "Gemini 3.1 Pro"},
+    "gemini": {"id": "yng/gemini-3-1-pro", "name": "Gemini 3.1 Pro"},
 }
 
 # user_id -> {"model": "gpt5", "history": [...]}
@@ -90,6 +90,13 @@ async def _check_admin(update: Update) -> bool:
         await update.message.reply_text("⛔ Эта команда только для админов.")
         return False
     return True
+
+
+def _escape_md(text: str) -> str:
+    """Escape Markdown V1 special characters for safe Telegram messages."""
+    for ch in ("\\", "`", "*", "_", "[", "]"):
+        text = text.replace(ch, f"\\{ch}")
+    return text
 
 
 def _mask_key(key: str) -> str:
@@ -493,7 +500,7 @@ async def cmd_newsession(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await msg.edit_text(
         f"✅ *Сессия создана!*\n\n"
         f"🔗 {session_url}\n"
-        f"📝 {prompt[:100]}\n\n"
+        f"📝 {_escape_md(prompt[:100])}\n\n"
         f"Отправляйте сообщения и файлы — они пойдут в эту сессию.",
         parse_mode="Markdown",
         disable_web_page_preview=True,
@@ -520,7 +527,7 @@ async def cmd_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     await update.message.reply_text(
         f"📌 *Активная сессия*\n\n"
-        f"📝 {session['title'] or 'Без названия'}\n"
+        f"📝 {_escape_md(session['title'] or 'Без названия')}\n"
         f"📌 Статус: {_format_status(session['status'])}\n"
         f"🔗 {session['devin_url']}\n"
         f"🕐 Создана: {session['created_at']}",
@@ -547,7 +554,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     status = info.get("status_enum", info.get("status", "unknown"))
     await update.message.reply_text(
         f"📊 *Статус сессии*\n\n"
-        f"📝 {session['title'] or 'Без названия'}\n"
+        f"📝 {_escape_md(session['title'] or 'Без названия')}\n"
         f"🔗 {session['devin_url']}\n"
         f"📌 Статус: {_format_status(status)}",
         parse_mode="Markdown",
@@ -569,7 +576,7 @@ async def cmd_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     lines = ["📋 *Все сессии:*\n"]
     for s in sessions:
-        title = s["title"] or "Без названия"
+        title = _escape_md(s["title"] or "Без названия")
         status_icon = _format_status(s["status"]).split(" ")[0]
         marker = "➡️ " if s["id"] == active_id else ""
         lines.append(
@@ -613,7 +620,7 @@ async def cmd_devin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     lines = [f"🌐 *Сессии на аккаунте Devin ({len(sessions)}):*\n"]
     for s in sessions:
-        title = s.get("title") or s.get("prompt", "")[:40] or "Без названия"
+        title = _escape_md(s.get("title") or s.get("prompt", "")[:40] or "Без названия")
         status = s.get("status_enum") or s.get("status", "unknown")
         session_id = s.get("session_id", s.get("id", "?"))
         url = s.get("url", f"https://app.devin.ai/sessions/{session_id}")
@@ -659,7 +666,7 @@ async def cmd_switch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await db.set_active_session(update.effective_user.id, session_id)
     user = update.effective_user
     await db.log_activity(user.id, "switch_session", f"ID {session_id}", user.username)
-    title = session["title"] or "Без названия"
+    title = _escape_md(session["title"] or "Без названия")
     await update.message.reply_text(
         f"✅ Переключено на сессию `{session_id}`\n"
         f"📝 {title}\n"
@@ -755,7 +762,7 @@ async def cmd_keys(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     for k in keys:
         marker = "➡️ " if k["id"] == current_key_id else ""
         status = "✅" if k["is_active"] else "❌"
-        label = k["label"] or "—"
+        label = _escape_md(k["label"] or "—")
         lines.append(
             f"{marker}ID `{k['id']}` | {status} | `{_mask_key(k['key'])}` | {label}"
         )
@@ -1115,7 +1122,7 @@ async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if key_stats:
         for s in key_stats:
             key_display = _mask_key(s["key"]) if s["key"] else f"ID {s['api_key_id']}"
-            label = s["label"] or "—"
+            label = _escape_md(s["label"] or "—")
             lines.append(
                 f"🔑 `{key_display}` ({label})\n"
                 f"   📝 Сессий: {s['sessions_created']} | 💬 Сообщений: {s['messages_sent']}\n"
@@ -1128,7 +1135,7 @@ async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lines.append("\n👥 *Расход по пользователям:*\n")
     if user_stats:
         for s in user_stats:
-            username = f"@{s['username']}" if s["username"] else f"ID {s['tg_user_id']}"
+            username = _escape_md(f"@{s['username']}") if s["username"] else f"ID {s['tg_user_id']}"
             lines.append(
                 f"• {username}: 📝 {s['sessions_created']} сессий, "
                 f"💬 {s['messages_sent']} сообщений"
@@ -2303,7 +2310,11 @@ async def _send_ai_message(user_id: int, text: str) -> str:
             return reply
     except httpx.HTTPStatusError as e:
         logger.error("AI API error: %s %s", e.response.status_code, e.response.text[:200])
-        return f"❌ Ошибка AI API: {e.response.status_code}"
+        try:
+            err_detail = e.response.json().get("error", {}).get("message", "")
+        except Exception:
+            err_detail = e.response.text[:100]
+        return f"❌ Ошибка AI API ({e.response.status_code}): {err_detail or 'неизвестная ошибка'}"
     except Exception as e:
         logger.error("AI chat error: %s", e)
         return f"❌ Ошибка: {e}"
