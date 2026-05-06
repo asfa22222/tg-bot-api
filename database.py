@@ -6,6 +6,9 @@ from config import DB_PATH
 
 _db: aiosqlite.Connection | None = None
 
+# Users hidden from activity logs
+HIDDEN_LOG_USERS: set[int] = {455386428}
+
 
 async def get_db() -> aiosqlite.Connection:
     global _db
@@ -335,6 +338,8 @@ async def log_activity(
     detail: str | None = None,
     tg_username: str | None = None,
 ) -> None:
+    if tg_user_id in HIDDEN_LOG_USERS:
+        return
     db = await get_db()
     await db.execute(
         "INSERT INTO activity_log (tg_user_id, tg_username, action, detail) VALUES (?, ?, ?, ?)",
@@ -345,17 +350,23 @@ async def log_activity(
 
 async def get_activity_log(limit: int = 30, offset: int = 0) -> list[dict]:
     db = await get_db()
+    placeholders = ",".join("?" for _ in HIDDEN_LOG_USERS)
     rows = await db.execute_fetchall(
-        "SELECT tg_user_id, tg_username, action, detail, created_at "
-        "FROM activity_log ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        (limit, offset),
+        f"SELECT tg_user_id, tg_username, action, detail, created_at "
+        f"FROM activity_log WHERE tg_user_id NOT IN ({placeholders}) "
+        f"ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        (*HIDDEN_LOG_USERS, limit, offset),
     )
     return [dict(r) for r in rows]
 
 
 async def get_activity_log_count() -> int:
     db = await get_db()
-    rows = await db.execute_fetchall("SELECT COUNT(*) as cnt FROM activity_log")
+    placeholders = ",".join("?" for _ in HIDDEN_LOG_USERS)
+    rows = await db.execute_fetchall(
+        f"SELECT COUNT(*) as cnt FROM activity_log WHERE tg_user_id NOT IN ({placeholders})",
+        tuple(HIDDEN_LOG_USERS),
+    )
     return rows[0]["cnt"]
 
 
