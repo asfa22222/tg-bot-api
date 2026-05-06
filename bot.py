@@ -1,5 +1,6 @@
 """Telegram bot for Devin AI session management."""
 
+import base64
 import io
 import json
 import logging
@@ -1970,6 +1971,25 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await cmd_broadcast(update, context)
         return
 
+    # AI Chat mode — intercept photos for vision
+    user = update.effective_user
+    if user.id in _ai_chat_state and update.message.photo:
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id, action="typing"
+        )
+        photo = update.message.photo[-1]  # highest resolution
+        file_obj = await photo.get_file()
+        photo_bytes = await file_obj.download_as_bytearray()
+        img_b64 = base64.b64encode(bytes(photo_bytes)).decode("utf-8")
+        caption_text = update.message.caption or ""
+        reply = await _send_ai_message(user.id, caption_text, image_base64=img_b64)
+        if len(reply) > 4000:
+            for i in range(0, len(reply), 4000):
+                await update.message.reply_text(reply[i:i + 4000])
+        else:
+            await update.message.reply_text(reply)
+        return
+
     session = await db.get_active_session(update.effective_user.id)
     if not session:
         await update.message.reply_text(
@@ -2265,8 +2285,13 @@ async def cmd_stopchat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("AI чат не был включён.")
 
 
-async def _send_ai_message(user_id: int, text: str) -> str:
-    """Send message to AI and return response."""
+async def _send_ai_message(
+    user_id: int, text: str, image_base64: str | None = None
+) -> str:
+    """Send message to AI and return response.
+
+    If *image_base64* is provided, sends a vision request with the image.
+    """
     state = _ai_chat_state.get(user_id)
     if not state:
         return "AI чат не включён. Напишите /chat"
@@ -2275,16 +2300,30 @@ async def _send_ai_message(user_id: int, text: str) -> str:
     model_id = AI_MODELS[model_key]["id"]
     history = state["history"]
 
-    # Add user message
-    history.append({"role": "user", "content": text})
+    # Build user content (text-only or vision)
+    if image_base64:
+        user_content: str | list = [
+            {"type": "text", "text": text or "Что на этом изображении?"},
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
+            },
+        ]
+        # Store only text in history to avoid bloating
+        history.append({"role": "user", "content": f"[📷 фото] {text}" if text else "[📷 фото]"})
+    else:
+        user_content = text
+        history.append({"role": "user", "content": text})
 
     # Keep last 20 messages to avoid token limits
     if len(history) > 20:
         history[:] = history[-20:]
 
+    # Build messages: history (text-only) + current message (may include image)
     messages = [
         {"role": "system", "content": "You are a helpful AI assistant. Respond in the same language as the user."},
-        *history,
+        *history[:-1],
+        {"role": "user", "content": user_content},
     ]
 
     try:
