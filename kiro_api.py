@@ -70,6 +70,7 @@ async def send_prompt(prompt: str) -> str:
         )
     except asyncio.TimeoutError:
         proc.kill()
+        await proc.wait()
         raise KiroError("Kiro CLI timed out (120s).")
     except FileNotFoundError:
         raise KiroError("kiro-cli binary not found.")
