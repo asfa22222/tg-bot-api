@@ -13,7 +13,8 @@ from telegram.ext import (
 
 import database as db
 import devin_api
-from config import TELEGRAM_BOT_TOKEN
+import kiro_api
+from config import TELEGRAM_BOT_TOKEN, KIRO_API_KEY
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -93,7 +94,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/adduser `<tg_id>` — добавить пользователя\n"
         "/removeuser `<tg_id>` — удалить пользователя\n"
         "/users — список пользователей\n"
-        "/myid — показать ваш Telegram ID",
+        "/myid — показать ваш Telegram ID\n\n"
+        "*Kiro (админ):*\n"
+        "/kiro `<запрос>` — отправить запрос в Kiro AI",
         parse_mode="Markdown",
     )
 
@@ -394,6 +397,45 @@ async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+# --- Kiro command (admin only) ---
+
+async def cmd_kiro(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _check_admin(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Использование: /kiro <запрос>\n"
+            "Пример: /kiro Напиши функцию сортировки на Python"
+        )
+        return
+
+    if not KIRO_API_KEY:
+        await update.message.reply_text(
+            "KIRO_API_KEY не настроен. Добавьте переменную окружения."
+        )
+        return
+
+    prompt = " ".join(context.args)
+    await update.message.reply_text("Kiro думает...")
+
+    try:
+        result = await kiro_api.send_prompt(prompt)
+    except kiro_api.KiroNotConfiguredError as e:
+        await update.message.reply_text(f"KIRO_API_KEY not configured: {e}")
+        return
+    except kiro_api.KiroError as e:
+        await update.message.reply_text(f"Kiro error: {e}")
+        return
+
+    # Telegram limits messages to 4096 chars
+    if len(result) > 4096:
+        for i in range(0, len(result), 4096):
+            await update.message.reply_text(result[i:i + 4096])
+    else:
+        await update.message.reply_text(result)
+
+
 # --- Text message handler (send to active session) ---
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -459,6 +501,9 @@ def main() -> None:
     app.add_handler(CommandHandler("adduser", cmd_adduser))
     app.add_handler(CommandHandler("removeuser", cmd_removeuser))
     app.add_handler(CommandHandler("users", cmd_users))
+
+    # Kiro integration (admin only)
+    app.add_handler(CommandHandler("kiro", cmd_kiro))
 
     # Text messages → active session
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
