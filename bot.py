@@ -375,7 +375,7 @@ async def _poll_sessions(context: ContextTypes.DEFAULT_TYPE) -> None:
             )
 
         # --- Status change notifications ---
-        current_status = info.get("status_enum", info.get("status", "unknown"))
+        current_status = info.get("status_enum") or info.get("status") or "unknown"
         last_status = sess["last_status"] or ""
 
         if current_status and current_status != last_status:
@@ -552,7 +552,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(f"❌ Ошибка: {e.detail}")
         return
 
-    status = info.get("status_enum", info.get("status", "unknown"))
+    status = info.get("status_enum") or info.get("status") or "unknown"
     await update.message.reply_text(
         f"📊 *Статус сессии*\n\n"
         f"📝 {_escape_md(session['title'] or 'Без названия')}\n"
@@ -622,7 +622,7 @@ async def cmd_devin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lines = [f"🌐 *Сессии на аккаунте Devin ({len(sessions)}):*\n"]
     for s in sessions:
         title = _escape_md(s.get("title") or s.get("prompt", "")[:40] or "Без названия")
-        status = s.get("status_enum") or s.get("status", "unknown")
+        status = s.get("status_enum") or s.get("status") or "unknown"
         session_id = s.get("session_id", s.get("id", "?"))
         url = s.get("url", f"https://app.devin.ai/sessions/{session_id}")
         created = s.get("created_at", "")[:10]
@@ -1238,7 +1238,7 @@ async def cmd_snapshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await msg.edit_text(f"❌ Ошибка: {e.detail}")
         return
 
-    status = info.get("status_enum", info.get("status", "unknown"))
+    status = info.get("status_enum") or info.get("status") or "unknown"
     title = info.get("title") or session["title"] or "Без названия"
     session_url = session["devin_url"]
 
@@ -1398,7 +1398,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except devin_api.DevinAPIError as e:
             await query.edit_message_text(f"❌ Ошибка: {e.detail}")
             return
-        status = info.get("status_enum", info.get("status", "unknown"))
+        status = info.get("status_enum") or info.get("status") or "unknown"
         await query.edit_message_text(
             f"📊 *Статус сессии*\n\n"
             f"📝 {session['title'] or 'Без названия'}\n"
