@@ -12,11 +12,23 @@ from config import DEVIN_API_BASE
 logger = logging.getLogger(__name__)
 
 
+def _parse_api_detail(raw: str) -> str:
+    """Extract human-readable detail from a JSON error response."""
+    try:
+        import json as _json
+        data = _json.loads(raw)
+        if isinstance(data, dict) and "detail" in data:
+            return str(data["detail"])
+    except Exception:
+        pass
+    return raw
+
+
 class DevinAPIError(Exception):
     def __init__(self, status_code: int, detail: str):
         self.status_code = status_code
-        self.detail = detail
-        super().__init__(f"Devin API error {status_code}: {detail}")
+        self.detail = _parse_api_detail(detail)
+        super().__init__(f"Devin API error {status_code}: {self.detail}")
 
 
 class NoAPIKeysError(Exception):
@@ -153,11 +165,11 @@ async def create_session(prompt: str, title: str | None = None) -> tuple[dict, i
 
 
 async def send_message(
-    session_id: str, message: str, max_init_retries: int = 6
+    session_id: str, message: str, max_init_retries: int = 12
 ) -> dict | None:
     """Send a message to an existing Devin session.
 
-    Automatically retries if session is still initializing (up to ~30s).
+    Automatically retries if session is still initializing (up to ~60s).
     """
     for attempt in range(max_init_retries):
         try:

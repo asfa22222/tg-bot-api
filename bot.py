@@ -107,6 +107,8 @@ def _mask_key(key: str) -> str:
 
 
 STATUS_LABELS = {
+    "new": "🆕 Новая",
+    "initializing": "⏳ Инициализация",
     "running": "🟢 Работает",
     "working": "🟢 Работает",
     "suspended": "⏸ Ожидает ответа",
@@ -122,7 +124,9 @@ STATUS_LABELS = {
 }
 
 
-def _format_status(status: str) -> str:
+def _format_status(status: str | None) -> str:
+    if not status:
+        return ""
     return STATUS_LABELS.get(status, f"❓ {status}")
 
 
@@ -383,10 +387,16 @@ async def _poll_sessions(context: ContextTypes.DEFAULT_TYPE) -> None:
             await db.update_session_status(sess["id"], current_status)
 
             title = sess["title"] or "Без названия"
+            old_fmt = _format_status(last_status)
+            new_fmt = _format_status(current_status)
+            if old_fmt:
+                status_line = f"📌 {old_fmt} → {new_fmt}"
+            else:
+                status_line = f"📌 {new_fmt}"
             text = (
                 f"🔔 *Статус сессии изменился*\n\n"
                 f"📝 {title}\n"
-                f"📌 {_format_status(last_status)} → {_format_status(current_status)}\n"
+                f"{status_line}\n"
                 f"🔗 {sess['devin_url']}"
             )
 
