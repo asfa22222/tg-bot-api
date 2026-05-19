@@ -1719,18 +1719,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
+    msg = await update.message.reply_text("⏳ Отправляю в сессию...")
+
     try:
         await devin_api.send_message(session["devin_session_id"], text)
     except devin_api.DevinAPIError as e:
         if e.status_code == 404 or "not found" in (e.detail or "").lower():
             await db.stop_polling_session(session["id"])
             await db.update_session_status(session["id"], "deleted")
-            await update.message.reply_text(
+            await msg.edit_text(
                 "❌ Сессия больше не существует на Devin.\n"
                 "Создайте новую: /newsession <задача>"
             )
+        elif "still initializing" in (e.detail or "").lower():
+            await msg.edit_text(
+                "⏳ Сессия ещё запускается (Devin загружает VM).\n"
+                "Подождите ~1 минуту и попробуйте снова."
+            )
         else:
-            await update.message.reply_text(f"❌ Ошибка: {e.detail}")
+            await msg.edit_text(f"❌ Ошибка: {e.detail}")
         return
 
     user = update.effective_user
@@ -1738,7 +1745,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await db.record_usage(key_id, user.id, "send_message", session["devin_session_id"])
     await db.log_activity(user.id, "send_message", text[:60], user.username)
 
-    await update.message.reply_text(
+    await msg.edit_text(
         f"📨 Сообщение отправлено в сессию.\n🔗 {session['devin_url']}",
         disable_web_page_preview=True,
     )

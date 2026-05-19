@@ -165,11 +165,11 @@ async def create_session(prompt: str, title: str | None = None) -> tuple[dict, i
 
 
 async def send_message(
-    session_id: str, message: str, max_init_retries: int = 12
+    session_id: str, message: str, max_init_retries: int = 6
 ) -> dict | None:
     """Send a message to an existing Devin session.
 
-    Automatically retries if session is still initializing (up to ~60s).
+    Automatically retries if session is still initializing (up to ~30s).
     """
     for attempt in range(max_init_retries):
         try:
